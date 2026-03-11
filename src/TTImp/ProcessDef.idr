@@ -35,7 +35,9 @@ import Data.Either
 import Data.List
 import Data.String
 import Data.Maybe
+import Libraries.Data.IntMap
 import Libraries.Data.NameMap
+import Libraries.Data.NatSet
 import Libraries.Data.WithDefault
 import Libraries.Text.PrettyPrint.Prettyprinter
 import Libraries.Data.List.SizeOf
@@ -1068,6 +1070,243 @@ lookupOrAddAlias eopts nest env fc n cs
          | Nothing => synthTypeFromPatterns eopts nest env fc n cs
        pure (Just gdef)
 
+----------------------------------------------------------------------
+-- Type generalisation for synthesised types
+--
+-- After processDef elaborates clauses and builds the case tree,
+-- any unsolved metavariables in the type represent positions that
+-- are truly polymorphic. We generalise them by:
+--   1. Prepending {0 a : Type} -> Pi binders for each unique unsolved meta
+--   2. Replacing Meta nodes in the type with Local references
+--   3. Weakening the case tree to account for the new args
+--   4. Updating the PMDef's args and pats
+----------------------------------------------------------------------
+
+-- Collect unique meta indices from a term in order of first appearance
+collectMetaInts : {vars : _} -> IntMap () -> Term vars -> (IntMap (), List Int)
+collectMetaInts seen (Meta _ _ i _)
+  = case lookup i seen of
+      Just _ => (seen, [])
+      Nothing => (insert i () seen, [i])
+collectMetaInts seen (Bind _ _ b sc)
+  = let (seen1, ms1) = collectMetaInts seen (binderType b)
+        (seen2, ms2) = collectMetaInts seen1 sc
+    in (seen2, ms1 ++ ms2)
+collectMetaInts seen (App _ f a)
+  = let (seen1, ms1) = collectMetaInts seen f
+        (seen2, ms2) = collectMetaInts seen1 a
+    in (seen2, ms1 ++ ms2)
+collectMetaInts seen (As _ _ as pat)
+  = let (seen1, ms1) = collectMetaInts seen as
+        (seen2, ms2) = collectMetaInts seen1 pat
+    in (seen2, ms1 ++ ms2)
+collectMetaInts seen (TDelayed _ _ tm) = collectMetaInts seen tm
+collectMetaInts seen (TDelay _ _ ty arg)
+  = let (seen1, ms1) = collectMetaInts seen ty
+        (seen2, ms2) = collectMetaInts seen1 arg
+    in (seen2, ms1 ++ ms2)
+collectMetaInts seen (TForce _ _ tm) = collectMetaInts seen tm
+collectMetaInts seen _ = (seen, [])
+
+-- Replace Meta nodes with Local references for generalised type variables.
+-- metaMap: meta Int -> (position in new binder sequence, name)
+-- k: number of new implicit binders being prepended
+-- depth: number of existing Bind nodes above the current position
+replaceMetas : {vars : _} -> IntMap (Nat, Name) -> (k : Nat) -> (depth : Nat) ->
+               Term vars -> Term vars
+replaceMetas mm k depth (Meta fc n i _)
+  = case lookup i mm of
+      Just (pos, nm) =>
+        -- de Bruijn index: depth existing binders + k new binders - 1 - position
+        let idx = (depth + k `minus` 1) `minus` pos in
+        Local {name = nm} fc Nothing idx (believe_me (the Nat 0))
+      Nothing => Meta fc n i []
+replaceMetas mm k depth (Bind fc x b sc)
+  = Bind fc x (map (replaceMetas mm k depth) b)
+               (replaceMetas mm k (S depth) sc)
+replaceMetas mm k depth (App fc f a)
+  = App fc (replaceMetas mm k depth f) (replaceMetas mm k depth a)
+replaceMetas mm k depth (As fc s as pat)
+  = As fc s (replaceMetas mm k depth as) (replaceMetas mm k depth pat)
+replaceMetas mm k depth (TDelayed fc r tm)
+  = TDelayed fc r (replaceMetas mm k depth tm)
+replaceMetas mm k depth (TDelay fc r ty arg)
+  = TDelay fc r (replaceMetas mm k depth ty) (replaceMetas mm k depth arg)
+replaceMetas mm k depth (TForce fc r tm)
+  = TForce fc r (replaceMetas mm k depth tm)
+replaceMetas _ _ _ tm = tm
+
+-- Add erased applications to self-recursive calls in a term.
+-- After generalisation, the function has k extra erased type arguments,
+-- so every occurrence of (Ref Func n) must become
+-- (App ... (App (Ref Func n) Erased) ... Erased) with k erased args.
+addErasedSelfCalls : {vars : _} -> Int -> Nat -> FC -> Term vars -> Term vars
+addErasedSelfCalls nidx k fc (Ref rfc Func nm)
+  = case nm of
+      Resolved i =>
+        if i == nidx
+          then apply fc (Ref rfc Func nm)
+                        (replicate k (Erased fc Placeholder))
+          else Ref rfc Func nm
+      _ => Ref rfc Func nm
+addErasedSelfCalls nidx k fc (App afc f a)
+  = App afc (addErasedSelfCalls nidx k fc f)
+            (addErasedSelfCalls nidx k fc a)
+addErasedSelfCalls nidx k fc (Bind bfc x b sc)
+  = Bind bfc x (map (addErasedSelfCalls nidx k fc) b)
+               (addErasedSelfCalls nidx k fc sc)
+addErasedSelfCalls nidx k fc (As afc s as pat)
+  = As afc s (addErasedSelfCalls nidx k fc as)
+             (addErasedSelfCalls nidx k fc pat)
+addErasedSelfCalls nidx k fc (TDelayed dfc r tm)
+  = TDelayed dfc r (addErasedSelfCalls nidx k fc tm)
+addErasedSelfCalls nidx k fc (TDelay dfc r ty arg)
+  = TDelay dfc r (addErasedSelfCalls nidx k fc ty)
+                 (addErasedSelfCalls nidx k fc arg)
+addErasedSelfCalls nidx k fc (TForce ffc r tm)
+  = TForce ffc r (addErasedSelfCalls nidx k fc tm)
+addErasedSelfCalls _ _ _ tm = tm
+
+-- Apply addErasedSelfCalls to all terms in a CaseTree.
+mutual
+  fixSelfCallsTree : {vars : _} -> Int -> Nat -> FC ->
+                     CaseTree vars -> CaseTree vars
+  fixSelfCallsTree nidx k fc (Case idx p scTy alts)
+    = Case idx p scTy (map (fixSelfCallsAlt nidx k fc) alts)
+  fixSelfCallsTree nidx k fc (STerm i tm)
+    = STerm i (addErasedSelfCalls nidx k fc tm)
+  fixSelfCallsTree _ _ _ t = t  -- Unmatched, Impossible
+
+  fixSelfCallsAlt : {vars : _} -> Int -> Nat -> FC ->
+                    CaseAlt vars -> CaseAlt vars
+  fixSelfCallsAlt nidx k fc (ConCase cn tag args ct)
+    = ConCase cn tag args (fixSelfCallsTree nidx k fc ct)
+  fixSelfCallsAlt nidx k fc (DelayCase ty arg ct)
+    = DelayCase ty arg (fixSelfCallsTree nidx k fc ct)
+  fixSelfCallsAlt nidx k fc (ConstCase c ct)
+    = ConstCase c (fixSelfCallsTree nidx k fc ct)
+  fixSelfCallsAlt nidx k fc (DefaultCase ct)
+    = DefaultCase (fixSelfCallsTree nidx k fc ct)
+
+-- Prepend {0 name : Type} -> Pi binders to a ClosedTerm.
+-- The body has metas replaced with Locals referencing these binders.
+-- Safety of believe_me: the recursive call returns ClosedTerm (Term []),
+-- but wrapping in Bind requires Term [nm]. The de Bruijn indices in body
+-- already account for all prepended binders (computed by replaceMetas),
+-- so the cast is representationally correct — only the type-level scope
+-- list is wrong.
+prependImplPis : FC -> List Name -> ClosedTerm -> ClosedTerm
+prependImplPis fc [] body = body
+prependImplPis fc (nm :: rest) body
+  = Bind fc nm (Pi fc erased Implicit (TType fc (MN "top" 0)))
+    (believe_me $ prependImplPis fc rest body)
+
+-- Extend an Env with implicit Pi binders at the front.
+-- The new binders have type Type (which doesn't reference any locals),
+-- so existing binder types in the env don't need weakening.
+extendEnvWithImpls : {vars : _} -> FC -> (names : List Name) ->
+                     Env Term vars -> Env Term (names ++ vars)
+extendEnvWithImpls fc [] env = env
+extendEnvWithImpls fc (n :: ns) env
+  = Pi fc erased Implicit (TType fc (MN "top" 0))
+    :: extendEnvWithImpls fc ns env
+
+-- Generalise a synthesised type by turning unsolved metas into
+-- universally quantified implicit type parameters.
+generaliseType : {auto c : Ref Ctxt Defs} ->
+                 {auto u : Ref UST UState} ->
+                 FC -> Name -> Int -> Core ()
+generaliseType fc n nidx
+  = do defs <- get Ctxt
+       Just gdef <- lookupCtxtExact (Resolved nidx) (gamma defs)
+         | Nothing => pure ()
+       -- Only generalise synthesised top-level user definitions
+       -- (not case blocks, nested/where functions, etc.)
+       fn <- toFullNames n
+       when ((SynthesisedType `elem` flags gdef) && isTopLevelUser fn) $ do
+         let ty = type gdef
+         -- Normalise to resolve any solved metas
+         nty <- normalise defs [] ty
+         -- Collect unsolved meta indices in order of appearance
+         let (_, metaInts) = collectMetaInts empty nty
+         unsolved <- filterM
+           (\i => do defs' <- get Ctxt
+                     Just mgdef <- lookupCtxtExact (Resolved i) (gamma defs')
+                       | Nothing => pure False
+                     case definition mgdef of
+                       Hole _ _ => pure True
+                       _ => pure False) metaInts
+         case unsolved of
+           [] => pure ()  -- All metas solved; nothing to generalise
+           ms => do
+             let k = length ms
+             -- Assign variable names: a, b, c, ...
+             let names = assignNames 0 ms
+             -- Build IntMap: meta Int -> (position, name)
+             let metaMap = buildMap 0 ms names
+             -- Build generalised type
+             let body = replaceMetas metaMap k 0 nty
+             let genTy = prependImplPis fc names body
+             -- Update the PMDef
+             let PMDef pi cargs treeCT treeRT pats = definition gdef
+               | _ => pure ()
+             let sz = mkSizeOf names
+             -- Update pats: extend env, weaken terms, add erased apps to LHS/RHS
+             let newPats = map (addImplsToPat fc nidx names k sz) pats
+             -- Weaken case trees to account for new args, then fix
+             -- self-recursive calls to include erased type arguments
+             let wCT = fixSelfCallsTree nidx k fc (weakenNs sz treeCT)
+             let wRT = fixSelfCallsTree nidx k fc (weakenNs sz treeRT)
+             -- Store updated definition
+             ignore $ addDef (Resolved nidx) $
+               { type := genTy
+               , definition := PMDef pi (names ++ cargs) wCT wRT newPats
+               } gdef
+             -- Remove the generalised metas from the hole list so
+             -- they aren't reported as unsolved
+             traverse_ removeHole ms
+             -- Recompute eraseArgs for the new type
+             (es, dtes) <- findErased genTy
+             defs' <- get Ctxt
+             Just gdef' <- lookupCtxtExact (Resolved nidx) (gamma defs')
+               | Nothing => pure ()
+             ignore $ addDef (Resolved nidx) $
+               { eraseArgs := es, safeErase := dtes } gdef'
+             log "declare.def" 5 $
+               "Generalised " ++ show n ++ " with "
+               ++ show k ++ " type parameter(s)"
+  where
+    isTopLevelUser : Name -> Bool
+    isTopLevelUser (NS _ n) = isTopLevelUser n
+    isTopLevelUser (UN _) = True
+    isTopLevelUser _ = False
+
+    assignNames : Nat -> List Int -> List Name
+    assignNames _ [] = []
+    assignNames i (_ :: rest)
+      = UN (Basic (singleton (chr (cast (ord 'a' + cast i)))))
+        :: assignNames (S i) rest
+
+    buildMap : Nat -> List Int -> List Name -> IntMap (Nat, Name)
+    buildMap _ [] _ = empty
+    buildMap _ _ [] = empty
+    buildMap pos (mi :: ms) (nm :: nms)
+      = insert mi (pos, nm) (buildMap (S pos) ms nms)
+
+    addImplsToPat : FC -> Int -> (implNames : List Name) -> (k : Nat) ->
+                    SizeOf implNames ->
+                    (vs ** (Env Term vs, Term vs, Term vs)) ->
+                    (vs' ** (Env Term vs', Term vs', Term vs'))
+    addImplsToPat fc fidx implNames k sz (vs ** (env, lhs, rhs))
+      = let wenv = extendEnvWithImpls fc implNames env
+            wlhs = weakenNs sz lhs
+            wrhs = addErasedSelfCalls fidx k fc (weakenNs sz rhs)
+            -- Prepend erased applications for the implicit args to the LHS
+            (fn, args) = getFnArgs wlhs
+            erasedArgs = replicate k (Erased fc Placeholder)
+            newLhs = apply fc fn (erasedArgs ++ args)
+        in (implNames ++ vs ** (wenv, newLhs, wrhs))
+
 export
 processDef : {vars : _} ->
              {auto c : Ref Ctxt Defs} ->
@@ -1158,6 +1397,12 @@ processDef opts nest env fc n_in cs_in
          -- trees.
          when (not (elem InCase opts)) $
               compileRunTime fc atotal
+
+         -- Generalise synthesised types: turn unsolved metas into
+         -- universally quantified implicit type parameters.
+         -- Must run AFTER compileRunTime so that mkRunTime's scopeEq
+         -- check sees the original (ungeneralised) PMDef args.
+         generaliseType fc n nidx
   where
     -- Move `withTotality` to Core.Context if we need it elsewhere
     ||| Temporarily rebind the default totality requirement (%default total/partial/covering).

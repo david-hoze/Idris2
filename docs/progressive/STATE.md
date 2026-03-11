@@ -1,6 +1,6 @@
 # Progressive Idris — Implementation State
 
-## Test Results: 16/17 passing
+## Test Results: 20/21 passing
 
 ### Block 1: Type Synthesis (15/16)
 
@@ -29,6 +29,15 @@
 |-----------|--------|------------------------------------|---------------------------------------------|
 | infer001  | PASS   | `--show-inferred-types` flag       | Displays types for unannotated definitions  |
 
+### Block 2: Type Generalization (4/4)
+
+| Test      | Status | Description                        | Notes                                      |
+|-----------|--------|------------------------------------|---------------------------------------------|
+| gen001    | PASS   | `id' x = x` with Int and String   | Single type param, polymorphic usage        |
+| gen002    | PASS   | `const' x y = x` with mixed types | Two type params generalized                 |
+| gen003    | PASS   | `myLength` with different element  | Recursive function, list element generalized|
+| gen004    | PASS   | `add x y = x + y` (not generalized)| Num constraint resolves to Integer          |
+
 ## Block 2 Feature: `--show-inferred-types`
 
 Compiler flag that displays resolved type signatures for functions without
@@ -39,6 +48,7 @@ $ idris2 --show-inferred-types --check myfile.idr
 1/1: Building myfile (myfile.idr)
 add : Integer -> Integer -> Integer
 myNot : Bool -> Bool
+id' : a -> a
 ```
 
 ### Implementation
@@ -53,6 +63,53 @@ myNot : Bool -> Bool
   `SynthesisedType` flag, displays via `displayType` from `Doc.Display`
 - Only shown for current module's own definitions, not imports
 - Correctly excludes user-annotated definitions
+
+## Block 2 Feature: Type Generalization
+
+After elaboration, unsolved metavariables in synthesised types are
+generalized to universally quantified implicit type parameters.
+
+Example: `id' x = x` infers `{0 a : Type} -> a -> a`
+
+### Implementation (`src/TTImp/ProcessDef.idr`)
+
+Located after `compileRunTime` in `processDef` — runs AFTER the runtime
+case tree is built (to avoid `mkRunTime`'s `scopeEq` check failing on
+modified cargs/rargs).
+
+- `collectMetaInts`: walks a Term collecting unique Meta indices in
+  first-appearance order
+- `replaceMetas`: replaces Meta nodes with Local references using computed
+  de Bruijn indices. Formula: `(depth + k - 1) - pos` where `depth` is
+  the number of existing Bind nodes above, `k` is the count of new implicit
+  binders, and `pos` is the meta's 0-indexed position among new binders.
+  Uses `believe_me` for the `IsVar` proof (technical debt — erased at
+  runtime, but not statically verified)
+- `prependImplPis`: wraps a ClosedTerm with `{0 name : Type} ->` Pi
+  binders. Uses `believe_me` for scope cast (safe because de Bruijn indices
+  in body already account for all binders)
+- `addErasedSelfCalls`: walks a Term and adds k erased applications to
+  self-recursive calls (`Ref Func (Resolved nidx)`). Necessary because
+  `weakenNs` only shifts indices, not adds args to call sites
+- `fixSelfCallsTree` / `fixSelfCallsAlt`: applies `addErasedSelfCalls` to
+  all STerm nodes in a CaseTree
+- `generaliseType`: main orchestration function:
+  1. Normalises the type to resolve solved metas
+  2. Collects unsolved meta indices
+  3. Filters to only genuinely unsolved holes
+  4. Assigns variable names (a, b, c, ...)
+  5. Replaces metas with Locals, prepends implicit Pi binders
+  6. Weakens both case trees, then fixes self-recursive calls
+  7. Updates pats with extended env, modified LHS/RHS
+  8. Removes generalised metas from hole list (`removeHole`)
+  9. Recomputes `eraseArgs` via `findErased`
+
+### Guards
+
+- Only runs for definitions with `SynthesisedType` flag
+- Only runs for top-level user names (`UN` optionally wrapped in `NS`) —
+  skips nested functions (`Nested`), case blocks (`CaseBlock`),
+  with blocks (`WithBlock`), and machine names (`MN`)
 
 ## Block 1 Changes
 
@@ -127,11 +184,21 @@ Fix paths:
 ### Higher-order functions
 
 `apply f x = f x` and `compose f g x = f (g x)` require Hindley-Milner
-inference to determine that `f` is a function type. This is Block 2 work
-(HM generalization).
+inference to determine that `f` is a function type. Similarly,
+`myMap f [] = []; myMap f (x :: xs) = f x :: myMap f xs` cannot be
+synthesized because the relation between `f`, `x`, and the list element
+type requires HM-style unification.
 
 ### Typeclass operations on unresolved types
 
 Functions using `<`, `>`, `compare` etc. on variable arguments fail because
 `Ord` search runs before the argument type is resolved from call-site literals.
 Functions using `+`, `*` work because `Num` search is handled differently.
+
+### Technical debt
+
+- `believe_me` is used for `IsVar` proofs in `replaceMetas` and for scope
+  casts in `prependImplPis`. These are representationally correct (de Bruijn
+  indices are computed properly, and the terms are closed) but not statically
+  verified. An off-by-one error would produce a compiler crash rather than
+  a compile-time type error.
