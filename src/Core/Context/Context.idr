@@ -66,10 +66,12 @@ record HoleFlags where
   constructor MkHoleFlags
   implbind : Bool -- stands for an implicitly bound name
   precisetype : Bool -- don't generalise multiplicities when instantiating
+  constSolvable : Bool -- safe to solve as constant function when args include
+                       -- constructors (e.g., return type holes from synthTypeFromPatterns)
 
 export
 holeInit : Bool -> HoleFlags
-holeInit b = MkHoleFlags b False
+holeInit b = MkHoleFlags b False False
 
 public export
 data Def : Type where

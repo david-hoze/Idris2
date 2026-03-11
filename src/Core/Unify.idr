@@ -12,6 +12,7 @@ import Core.Value
 import Data.Maybe
 
 import Libraries.Data.List.SizeOf
+import Libraries.Data.List.Thin
 
 import Libraries.Data.VarSet
 
@@ -829,6 +830,58 @@ mutual
       solutionHeadSame (NApp _ (NMeta _ shead _) _) = shead == mref
       solutionHeadSame _ = False
 
+  -- Try to solve a constSolvable hole as a constant function.
+  -- When patternEnv fails (args include constructors from pattern matching)
+  -- but the solution is closed (doesn't depend on any local variables),
+  -- solve the hole as \_ => \_ => ... => solution.
+  tryConstantSolve : {auto c : Ref Ctxt Defs} ->
+              {auto u : Ref UST UState} ->
+              {vars : _} ->
+              (swaporder : Bool) ->
+              UnifyInfo -> FC -> Env Term vars ->
+              (metaname : Name) -> (metaref : Int) ->
+              (margs : List (Closure vars)) ->
+              (margs' : List (Closure vars)) ->
+              (soln : NF vars) ->
+              (mdef : GlobalDef) ->
+              Core UnifyResult
+  tryConstantSolve swap mode loc env mname mref margs margs' tmnf mdef
+      = do defs <- get Ctxt
+           empty <- clearDefs defs
+           -- Quote the solution and check if it's closed
+           tm <- quote empty env tmnf
+           case shrink tm none of
+                Nothing =>
+                  -- Solution depends on local variables; fall back to default
+                  if invertible mdef
+                     then unifyHoleApp swap mode loc env mname mref margs margs' tmnf
+                     else postponePatVar swap mode loc env mname mref margs margs' tmnf
+                Just closedTm =>
+                  do -- Occurs check on the closed term
+                     Just _ <- occursCheck loc env mode mname tm
+                       | _ => postponePatVar swap mode loc env mname mref margs margs' tmnf
+                     -- Build constant function: wrap in lambdas for each Pi binder
+                     ty <- normalisePis defs Env.empty (type mdef)
+                     let rhs = constFn ty closedTm
+                     log "unify.hole" 5 $
+                       "Constant-function solving " ++ show mname
+                     let num = length margs
+                     let simpleDef = MkPMDefInfo (SolvedHole num)
+                                                 (not (isUserName mname))
+                                                 False
+                     let newdef = { definition :=
+                                      PMDef simpleDef Scope.empty (STerm 0 rhs) (STerm 0 rhs) []
+                                  } mdef
+                     ignore $ addDef (Resolved mref) newdef
+                     removeHole mref
+                     pure $ solvedHole mref
+    where
+      -- Wrap a closed term in lambdas to match the Pi binders of a type
+      constFn : {vs : _} -> Term vs -> Term vs -> Term vs
+      constFn (Bind bfc x (Pi _ c info _) sc) soln
+          = Bind bfc x (Lam bfc c info (Erased bfc Placeholder)) (constFn sc (weaken soln))
+      constFn _ soln = soln
+
   unifyHole : {auto c : Ref Ctxt Defs} ->
               {auto u : Ref UST UState} ->
               {vars : _} ->
@@ -853,11 +906,13 @@ mutual
                 Nothing =>
                   do Just hdef <- lookupCtxtExact (Resolved mref) (gamma defs)
                         | _ => postponePatVar swap mode loc env mname mref margs margs' tmnf
-                     let Hole _ _ = definition hdef
+                     let Hole _ flags = definition hdef
                         | _ => postponePatVar swap mode loc env mname mref margs margs' tmnf
-                     if invertible hdef
-                        then unifyHoleApp swap mode loc env mname mref margs margs' tmnf
-                        else postponePatVar swap mode loc env mname mref margs margs' tmnf
+                     if constSolvable flags
+                        then tryConstantSolve swap mode loc env mname mref margs margs' tmnf hdef
+                        else if invertible hdef
+                                then unifyHoleApp swap mode loc env mname mref margs margs' tmnf
+                                else postponePatVar swap mode loc env mname mref margs margs' tmnf
                 Just (newvars ** (locs, submv)) =>
                   do Just hdef <- lookupCtxtExact (Resolved mref) (gamma defs)
                          | _ => postponePatVar swap mode loc env mname mref margs margs' tmnf
@@ -1004,6 +1059,7 @@ mutual
                case !(evalClosure defs c) of
                  NApp _ (NLocal {}) _ => pure $ S !(localsIn cs)
                  _ => localsIn cs
+
 
   unifyBothApps mode loc env xfc (NMeta xn xi xargs) xargs' yfc fy yargs'
       = unifyApp False mode loc env xfc (NMeta xn xi xargs) xargs'

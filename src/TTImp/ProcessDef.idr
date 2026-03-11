@@ -850,6 +850,13 @@ synthTypeFromPatterns eopts nest env fc n cs
        log "declare.def" 10 $ "Synthesized type: " ++ show synthType
        processType eopts nest env fc top Public []
           $ Mk [fc, MkFCVal fc n] synthType
+       -- Mark all unsolved holes in the synthesized type as constSolvable.
+       -- This is needed when pattern matching substitutes constructor
+       -- arguments into hole args (e.g., return type or implicit type params).
+       do defs <- get Ctxt
+          Just gdef <- lookupCtxtExact n (gamma defs)
+            | Nothing => pure ()
+          markSynthHoles (type gdef)
        defs <- get Ctxt
        lookupCtxtExact n (gamma defs)
   where
@@ -966,6 +973,32 @@ synthTypeFromPatterns eopts nest env fc n cs
                         then pure (Just (IPrimVal fc (PrT IntegerType)))
                         else guessReturnType fc rest
     guessReturnType fc (_ :: rest) = guessReturnType fc rest
+
+    -- Mark a single hole as constSolvable if it exists and is still a Hole
+    markHoleConstSolvable : Int -> Core ()
+    markHoleConstSolvable idx
+      = do defs <- get Ctxt
+           Just gdef <- lookupCtxtExact (Resolved idx) (gamma defs)
+             | Nothing => pure ()
+           case definition gdef of
+                Hole locs flags =>
+                  do let flags' = { constSolvable := True } flags
+                     updateDef (Resolved idx) (const (Just (Hole locs flags')))
+                _ => pure ()
+
+    -- Walk the synthesized type and mark all unsolved holes as constSolvable.
+    -- These holes were created by processType for implicit type parameters
+    -- and the return type; they may need constant-function solving when
+    -- pattern matching substitutes constructors into their argument lists.
+    markSynthHoles : {vars : _} -> Term vars -> Core ()
+    markSynthHoles (Bind _ _ b scope)
+      = do markSynthHoles (binderType b)
+           markSynthHoles scope
+    markSynthHoles (Meta _ _ idx args)
+      = do markHoleConstSolvable idx
+           traverse_ markSynthHoles args
+    markSynthHoles (App _ f a) = do markSynthHoles f; markSynthHoles a
+    markSynthHoles _ = pure ()
 
     buildSynthType : FC -> Int -> List RawImp -> RawImp -> RawImp
     buildSynthType fc _ [] retTy = retTy
