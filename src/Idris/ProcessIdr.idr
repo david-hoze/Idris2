@@ -32,6 +32,7 @@ import Idris.REPL.Common
 import Idris.Syntax
 import Idris.Syntax.TTC
 import Idris.Pretty
+import Idris.Doc.Display
 import Idris.Doc.String
 
 import Data.SortedMap
@@ -284,6 +285,33 @@ findCG
     = do defs <- get Ctxt
          getCG (codegen (session (options defs)))
 
+-- Display inferred types for definitions that were synthesised by
+-- synthTypeFromPatterns (marked with the SynthesisedType flag).
+showSynthesisedTypes : {auto c : Ref Ctxt Defs} ->
+                       {auto s : Ref Syn SyntaxInfo} ->
+                       {auto o : Ref ROpts REPLOpts} ->
+                       Core ()
+showSynthesisedTypes
+    = do defs <- get Ctxt
+         let start = firstEntry (gamma defs)
+         let end = nextEntry (gamma defs)
+         showRange defs start end
+  where
+    hasSynthFlag : List DefFlag -> Bool
+    hasSynthFlag [] = False
+    hasSynthFlag (SynthesisedType :: _) = True
+    hasSynthFlag (_ :: xs) = hasSynthFlag xs
+
+    showRange : Defs -> Int -> Int -> Core ()
+    showRange defs idx end
+        = when (idx < end) $
+            do Just gdef <- lookupCtxtExact (Resolved idx) (gamma defs)
+                  | Nothing => showRange defs (idx + 1) end
+               when (hasSynthFlag (flags gdef)) $ do
+                  ty <- displayType True defs (fullname gdef, idx, gdef)
+                  iputStrLn $ reAnnotate Syntax ty
+               showRange defs (idx + 1) end
+
 ||| Process everything in the module; return the syntax information which
 ||| needs to be written to the TTC (e.g. exported infix operators)
 ||| Returns 'Nothing' if it didn't reload anything
@@ -392,8 +420,10 @@ processMod sourceFileName ttcFileName msg sourcecode origin
                 let errs = errs ++ totErrs
 --                 coreLift $ gc
 
-                when (isNil errs) $
+                when (isNil errs) $ do
                    logTime 2 "Compile defs" $ compileAndInlineAll
+                   when (showInferredTypes !getSession)
+                        showSynthesisedTypes
 
                 -- Save the import hashes for the imports we just read.
                 -- If they haven't changed next time, and the source

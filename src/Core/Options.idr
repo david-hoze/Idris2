@@ -175,6 +175,7 @@ record Session where
      -- incremental CGs are set (intended for overriding any environment
      -- variables that set incremental compilation)
   caseTreeHeuristics : Bool -- apply heuristics to pick matches for case tree building
+  showInferredTypes : Bool -- display inferred types for unannotated definitions
 
 public export
 record PPrinter where
@@ -242,7 +243,7 @@ defaultSession : Session
 defaultSession = MkSessionOpts False CoveringOnly False False Chez [] 1000 False False
                                defaultLogLevel Nothing False Nothing Nothing
                                Nothing Nothing False 1 False False True
-                               False [] False False
+                               False [] False False False
 
 export
 defaultElab : ElabDirectives

@@ -857,6 +857,8 @@ synthTypeFromPatterns eopts nest env fc n cs
           Just gdef <- lookupCtxtExact n (gamma defs)
             | Nothing => pure ()
           markSynthHoles (type gdef)
+       -- Mark this definition as having a synthesised type
+       setFlag fc n SynthesisedType
        defs <- get Ctxt
        lookupCtxtExact n (gamma defs)
   where
@@ -1045,6 +1047,7 @@ lookupOrAddAlias eopts nest env fc n [cl@(PatClause _ lhs _)]
        processType eopts nest env fc top Public []
           -- See #3409
           $ Mk [fc, MkFCVal fc n] $ holeyType (map snd args)
+       setFlag fc n SynthesisedType
        defs <- get Ctxt
        lookupCtxtExact n (gamma defs)
 

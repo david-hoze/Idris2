@@ -235,6 +235,9 @@ data DefFlag
     | Identity Nat
          -- Is it the identity function at runtime?
          -- The nat represents which argument the function evaluates to
+    | SynthesisedType
+         -- Type was inferred by synthTypeFromPatterns, not user-declared.
+         -- Used by --show-inferred-types to display what was inferred.
 %name DefFlag dflag
 
 export
@@ -252,6 +255,7 @@ Eq DefFlag where
     (==) AllGuarded AllGuarded = True
     (==) (ConType x) (ConType y) = x == y
     (==) (Identity x) (Identity y) = x == y
+    (==) SynthesisedType SynthesisedType = True
     (==) _ _ = False
 
 export
@@ -269,6 +273,7 @@ Show DefFlag where
   show AllGuarded = "allguarded"
   show (ConType ci) = "contype " ++ show ci
   show (Identity x) = "identity " ++ show x
+  show SynthesisedType = "synthesisedtype"
 
 public export
 record SCCall where

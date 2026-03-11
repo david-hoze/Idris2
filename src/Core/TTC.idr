@@ -1083,6 +1083,7 @@ TTC DefFlag where
   toBuf AllGuarded = tag 10
   toBuf (ConType ci) = do tag 11; toBuf ci
   toBuf (Identity x) = do tag 12; toBuf x
+  toBuf SynthesisedType = tag 14
 
   fromBuf
       = case !getTag of
@@ -1098,6 +1099,7 @@ TTC DefFlag where
              11 => do ci <- fromBuf; pure (ConType ci)
              12 => do x <- fromBuf; pure (Identity x)
              13 => pure NoInline
+             14 => pure SynthesisedType
              15 => pure Deprecate
              _ => corrupt "DefFlag"
 

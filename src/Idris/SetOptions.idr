@@ -514,6 +514,9 @@ preOptions (ShowMachineNames :: opts)
 preOptions (ShowNamespaces :: opts)
     = do updatePPrint { fullNamespace := True }
          preOptions opts
+preOptions (ShowInferredTypes :: opts)
+    = do updateSession ({ showInferredTypes := True })
+         preOptions opts
 preOptions (Color b :: opts)
     = do setColor b
          preOptions opts
