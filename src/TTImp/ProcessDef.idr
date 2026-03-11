@@ -823,6 +823,114 @@ isAlias lhs
        args <- traverse (isExplicit >=> bitraverse pure isIBindVar) apps
        pure (hd, args)
 
+-- Pre-scan LHS and RHS patterns across clauses to infer argument and return
+-- types from constructors. Synthesizes a type and registers it via processType.
+-- Returns the newly-registered GlobalDef, or Nothing if no clauses/LHS found.
+synthTypeFromPatterns : {vars : _} ->
+                        {auto m : Ref MD Metadata} ->
+                        {auto c : Ref Ctxt Defs} ->
+                        {auto u : Ref UST UState} ->
+                        {auto s : Ref Syn SyntaxInfo} ->
+                        {auto o : Ref ROpts REPLOpts} ->
+                        List ElabOpt -> NestedNames vars -> Env Term vars -> FC ->
+                        Name -> List ImpClause -> Core (Maybe GlobalDef)
+synthTypeFromPatterns eopts nest env fc n cs
+  = do let Just firstLhs = getFirstLhs cs
+         | Nothing => pure Nothing
+       let (_, args) = getFnArgs firstLhs []
+       let explicitArgs = mapMaybe isExplicit args
+       argTypes <- guessAllArgTypes fc cs 0 explicitArgs
+       mRetTy <- guessReturnType fc cs
+       let retTy = fromMaybe (Implicit fc False) mRetTy
+       let synthType = buildSynthType fc 0 argTypes retTy
+       log "declare.def" 5 $
+         "No type declaration for " ++ show n
+         ++ " (" ++ show (length explicitArgs) ++ " args). "
+         ++ "Synthesized type from patterns."
+       log "declare.def" 10 $ "Synthesized type: " ++ show synthType
+       processType eopts nest env fc top Public []
+          $ Mk [fc, MkFCVal fc n] synthType
+       defs <- get Ctxt
+       lookupCtxtExact n (gamma defs)
+  where
+    getFirstLhs : List ImpClause -> Maybe RawImp
+    getFirstLhs (PatClause _ lhs _ :: _) = Just lhs
+    getFirstLhs (_ :: rest) = getFirstLhs rest
+    getFirstLhs [] = Nothing
+
+    getRetTy : Defs -> ClosedNF -> Core (Maybe (Name, ClosedNF))
+    getRetTy defs (NBind bfc _ (Pi {}) sc)
+        = getRetTy defs !(sc defs (toClosure defaultOpts Env.empty (Erased bfc Placeholder)))
+    getRetTy defs (NTCon _ tn _ _)
+        = do Just ty <- lookupTyExact tn (gamma defs)
+                  | Nothing => pure Nothing
+             pure (Just (tn, !(nf defs Env.empty ty)))
+    getRetTy _ _ = pure Nothing
+
+    applyTo : Defs -> RawImp -> ClosedNF -> Core RawImp
+    applyTo defs ty (NBind bfc _ (Pi _ _ Explicit _) sc)
+        = applyTo defs (IApp bfc ty (Implicit bfc False))
+               !(sc defs (toClosure defaultOpts Env.empty (Erased bfc Placeholder)))
+    applyTo defs ty (NBind bfc x (Pi {}) sc)
+        = applyTo defs (INamedApp bfc ty x (Implicit bfc False))
+               !(sc defs (toClosure defaultOpts Env.empty (Erased bfc Placeholder)))
+    applyTo defs ty _ = pure ty
+
+    guessFromClauses : FC -> Nat -> List ImpClause -> Core (Maybe RawImp)
+    guessFromClauses fc pos [] = pure Nothing
+    guessFromClauses fc pos (PatClause _ lhs _ :: rest)
+      = do let (_, args) = getFnArgs lhs []
+           let explArgs = mapMaybe isExplicit args
+           case drop pos (map snd explArgs) of
+                (pat :: _) =>
+                  do let patHead = getFn pat
+                     case patHead of
+                          IVar pfc pn =>
+                            do defs <- get Ctxt
+                               results <- lookupTyName pn (gamma defs)
+                               case results of
+                                    [(_, (_, ty))] =>
+                                      do tyNF <- nf defs Env.empty ty
+                                         Just (tyn, tyty) <- getRetTy defs tyNF
+                                           | Nothing => guessFromClauses fc pos rest
+                                         Just <$> applyTo defs (IVar fc tyn) tyty
+                                    _ => guessFromClauses fc pos rest
+                          _ => guessFromClauses fc pos rest
+                [] => guessFromClauses fc pos rest
+    guessFromClauses fc pos (_ :: rest) = guessFromClauses fc pos rest
+
+    guessAllArgTypes : FC -> List ImpClause -> Nat -> List (FC, RawImp) -> Core (List RawImp)
+    guessAllArgTypes fc cs pos [] = pure []
+    guessAllArgTypes fc cs pos ((argfc, _) :: rest)
+      = do mty <- guessFromClauses fc pos cs
+           let argTy = fromMaybe (Implicit argfc False) mty
+           rest' <- guessAllArgTypes fc cs (S pos) rest
+           pure (argTy :: rest')
+
+    guessReturnType : FC -> List ImpClause -> Core (Maybe RawImp)
+    guessReturnType fc [] = pure Nothing
+    guessReturnType fc (PatClause _ _ rhs :: rest)
+      = do let rhsHead = getFn rhs
+           case rhsHead of
+                IVar pfc pn =>
+                  do defs <- get Ctxt
+                     results <- lookupTyName pn (gamma defs)
+                     case results of
+                          [(_, (_, ty))] =>
+                            do tyNF <- nf defs Env.empty ty
+                               Just (tyn, tyty) <- getRetTy defs tyNF
+                                 | Nothing => guessReturnType fc rest
+                               Just <$> applyTo defs (IVar fc tyn) tyty
+                          _ => guessReturnType fc rest
+                _ => guessReturnType fc rest
+    guessReturnType fc (_ :: rest) = guessReturnType fc rest
+
+    buildSynthType : FC -> Int -> List RawImp -> RawImp -> RawImp
+    buildSynthType fc _ [] retTy = retTy
+    buildSynthType fc i (argTy :: rest) retTy
+      = let vfc = virtualiseFC fc in
+        IPi vfc top Explicit (Just (MN "arg" i)) argTy (buildSynthType fc (i + 1) rest retTy)
+
 lookupOrAddAlias : {vars : _} ->
                    {auto m : Ref MD Metadata} ->
                    {auto c : Ref Ctxt Defs} ->
@@ -839,7 +947,7 @@ lookupOrAddAlias eopts nest env fc n [cl@(PatClause _ lhs _)]
        -- No prior declaration:
        --   1) check whether it has the shape of an alias
        let Just (hd, args) = isAlias lhs
-         | Nothing => pure Nothing
+         | Nothing => synthTypeFromPatterns eopts nest env fc n [cl]
        --   2) check whether it could be a misspelling
        log "declare.def" 5 $
          "Missing type declaration for the alias "
@@ -873,9 +981,14 @@ lookupOrAddAlias eopts nest env fc n [cl@(PatClause _ lhs _)]
         IPi xfc top Explicit (Just x) (Implicit xfc False)
       $ holeyType xs
 
-lookupOrAddAlias _ _ _ fc n _
+-- Multi-clause or constructor-pattern definitions without type declaration.
+-- Pre-scan LHS patterns to infer argument types from constructor heads,
+-- then synthesize a type and register it via processType.
+lookupOrAddAlias eopts nest env fc n cs
   = do defs <- get Ctxt
-       lookupCtxtExact n (gamma defs)
+       Just gdef <- lookupCtxtExact n (gamma defs)
+         | Nothing => synthTypeFromPatterns eopts nest env fc n cs
+       pure (Just gdef)
 
 export
 processDef : {vars : _} ->
