@@ -876,6 +876,39 @@ synthTypeFromPatterns eopts nest env fc n cs
                !(sc defs (toClosure defaultOpts Env.empty (Erased bfc Placeholder)))
     applyTo defs ty _ = pure ty
 
+    -- Try to resolve a constructor name to its parent type
+    resolveConName : FC -> Name -> Core (Maybe RawImp)
+    resolveConName fc pn
+      = do defs <- get Ctxt
+           results <- lookupTyName pn (gamma defs)
+           case results of
+                [(_, (_, ty))] =>
+                  do tyNF <- nf defs Env.empty ty
+                     Just (tyn, tyty) <- getRetTy defs tyNF
+                       | Nothing => pure Nothing
+                     Just <$> applyTo defs (IVar fc tyn) tyty
+                _ => pure Nothing
+
+    -- Try to guess a type from a pattern, handling IAlternative (pairs, etc.)
+    guessFromPat : FC -> RawImp -> Core (Maybe RawImp)
+    guessFromPat fc pat
+      = do let patHead = getFn pat
+           case patHead of
+                IVar pfc pn => resolveConName fc pn
+                IAlternative _ _ alts => tryAlts alts
+                _ => pure Nothing
+      where
+        tryAlts : List RawImp -> Core (Maybe RawImp)
+        tryAlts [] = pure Nothing
+        tryAlts (alt :: alts)
+          = do let altHead = getFn alt
+               case altHead of
+                    IVar _ pn =>
+                      do Just res <- resolveConName fc pn
+                           | Nothing => tryAlts alts
+                         pure (Just res)
+                    _ => tryAlts alts
+
     guessFromClauses : FC -> Nat -> List ImpClause -> Core (Maybe RawImp)
     guessFromClauses fc pos [] = pure Nothing
     guessFromClauses fc pos (PatClause _ lhs _ :: rest)
@@ -883,19 +916,9 @@ synthTypeFromPatterns eopts nest env fc n cs
            let explArgs = mapMaybe isExplicit args
            case drop pos (map snd explArgs) of
                 (pat :: _) =>
-                  do let patHead = getFn pat
-                     case patHead of
-                          IVar pfc pn =>
-                            do defs <- get Ctxt
-                               results <- lookupTyName pn (gamma defs)
-                               case results of
-                                    [(_, (_, ty))] =>
-                                      do tyNF <- nf defs Env.empty ty
-                                         Just (tyn, tyty) <- getRetTy defs tyNF
-                                           | Nothing => guessFromClauses fc pos rest
-                                         Just <$> applyTo defs (IVar fc tyn) tyty
-                                    _ => guessFromClauses fc pos rest
-                          _ => guessFromClauses fc pos rest
+                  do Just res <- guessFromPat fc pat
+                       | Nothing => guessFromClauses fc pos rest
+                     pure (Just res)
                 [] => guessFromClauses fc pos rest
     guessFromClauses fc pos (_ :: rest) = guessFromClauses fc pos rest
 
@@ -906,6 +929,17 @@ synthTypeFromPatterns eopts nest env fc n cs
            let argTy = fromMaybe (Implicit argfc False) mty
            rest' <- guessAllArgTypes fc cs (S pos) rest
            pure (argTy :: rest')
+
+    -- Check if a RawImp is a numeric literal expression
+    -- Covers: IPrimVal (BI _), IAlternative (UniqueDefault ...) [...],
+    -- and IApp (IVar fromInteger) (IPrimVal (BI _))
+    isNumericRHS : RawImp -> Bool
+    isNumericRHS (IPrimVal _ (BI _)) = True
+    isNumericRHS (IPrimVal _ (I _)) = True
+    isNumericRHS (IAlternative _ (UniqueDefault _) _) = True
+    isNumericRHS (IApp _ _ (IPrimVal _ (BI _))) = True
+    isNumericRHS (IApp _ _ (IPrimVal _ (I _))) = True
+    isNumericRHS _ = False
 
     guessReturnType : FC -> List ImpClause -> Core (Maybe RawImp)
     guessReturnType fc [] = pure Nothing
@@ -918,11 +952,19 @@ synthTypeFromPatterns eopts nest env fc n cs
                      case results of
                           [(_, (_, ty))] =>
                             do tyNF <- nf defs Env.empty ty
-                               Just (tyn, tyty) <- getRetTy defs tyNF
-                                 | Nothing => guessReturnType fc rest
-                               Just <$> applyTo defs (IVar fc tyn) tyty
-                          _ => guessReturnType fc rest
-                _ => guessReturnType fc rest
+                               case !(getRetTy defs tyNF) of
+                                    Just (tyn, tyty) =>
+                                      Just <$> applyTo defs (IVar fc tyn) tyty
+                                    Nothing =>
+                                      if isNumericRHS rhs
+                                         then pure (Just (IPrimVal fc (PrT IntegerType)))
+                                         else guessReturnType fc rest
+                          _ => if isNumericRHS rhs
+                                  then pure (Just (IPrimVal fc (PrT IntegerType)))
+                                  else guessReturnType fc rest
+                _ => if isNumericRHS rhs
+                        then pure (Just (IPrimVal fc (PrT IntegerType)))
+                        else guessReturnType fc rest
     guessReturnType fc (_ :: rest) = guessReturnType fc rest
 
     buildSynthType : FC -> Int -> List RawImp -> RawImp -> RawImp
