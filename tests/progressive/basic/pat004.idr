@@ -1,4 +1,4 @@
 module Main
-fst (x, _) = x
+myFst (x, _) = x
 main : IO ()
-main = printLn (fst (42, "hello"))
+main = printLn (myFst (42, "hello"))

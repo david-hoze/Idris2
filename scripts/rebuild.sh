@@ -40,8 +40,8 @@ if IDRIS2_BOOT="$BOOT_TMP/idris2" make idris2-exec 2>&1 | tee "$LOG"; then
     echo ""
     # Smoke test: compile a trivial program, not just --version
     echo "=== Smoke test ==="
-    echo 'module Main; main : IO (); main = printLn 42' > /tmp/_idris2_smoke.idr
-    if "$REPO/build/exec/idris2" --check /tmp/_idris2_smoke.idr 2>/dev/null; then
+    printf 'module Main\nmain : IO ()\nmain = printLn 42\n' > /tmp/_idris2_smoke.idr
+    if (cd /tmp && "$REPO/build/exec/idris2" --check _idris2_smoke.idr 2>/dev/null); then
         echo "Smoke test passed."
         rm -f /tmp/_idris2_smoke.idr
         echo "=== BUILD SUCCEEDED ==="
