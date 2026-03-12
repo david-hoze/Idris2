@@ -2,6 +2,9 @@
 # Progressive Idris test runner
 # Finds all .idr files in tests/progressive/, compiles and runs them,
 # compares output against .expected files.
+# Error tests: if a .error file exists (instead of .expected), the test
+# expects compilation to FAIL and checks that the error output contains
+# each non-empty line from the .error file.
 # Uses Chez Scheme backend.
 
 IDRIS2="${IDRIS2:-$(cd "$(dirname "$0")/../.." && pwd)/build/exec/idris2}"
@@ -26,6 +29,40 @@ for idr in $(find "$SCRIPT_DIR" -name '*.idr' | sort); do
     dir=$(dirname "$idr")
     base=$(basename "$idr" .idr)
     expected="$dir/$base.expected"
+    error_expected="$dir/$base.error"
+
+    if [ -f "$error_expected" ]; then
+        # Error test: compilation should fail
+        compile_out=$(cd "$dir" && "$IDRIS2" --no-color --check "$base.idr" 2>&1)
+        compile_rc=$?
+
+        if [ $compile_rc -eq 0 ]; then
+            echo -e "${RED}FAIL${NC} $base (expected error but compiled successfully)"
+            FAIL=$((FAIL + 1))
+        else
+            # Check that each non-empty line from .error appears in the output
+            all_matched=true
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                [ -z "$line" ] && continue
+                if ! echo "$compile_out" | grep -qF "$line"; then
+                    all_matched=false
+                    echo -e "${RED}FAIL${NC} $base (error output missing: $line)"
+                    echo "  Got: $(echo "$compile_out" | head -3)"
+                    break
+                fi
+            done < "$error_expected"
+
+            if [ "$all_matched" = true ]; then
+                echo -e "${GREEN}PASS${NC} $base"
+                PASS=$((PASS + 1))
+            else
+                FAIL=$((FAIL + 1))
+            fi
+        fi
+
+        rm -rf "$dir/build"
+        continue
+    fi
 
     if [ ! -f "$expected" ]; then
         echo -e "${YELLOW}SKIP${NC} $idr (no .expected file)"
