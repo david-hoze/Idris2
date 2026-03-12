@@ -1222,6 +1222,111 @@ mutual
   fixSelfCallsAlt nidx k fc (DefaultCase ct)
     = DefaultCase (fixSelfCallsTree nidx k fc ct)
 
+-- Generate Local references for constraint arguments at a given depth.
+-- Produces [Local (startPos+depth), Local (startPos+1+depth), ...].
+mkConstraintLocals : {vars : _} -> (remaining : Nat) -> (startPos : Nat) ->
+                     (depth : Nat) -> FC -> List (Term vars)
+mkConstraintLocals 0 _ _ _ = []
+mkConstraintLocals (S n) pos depth fc
+  = Local {name = MN "__cb_con" (cast pos)} fc Nothing (pos + depth)
+          (believe_me (the Nat 0))
+    :: mkConstraintLocals n (S pos) depth fc
+
+-- Collect resolved function reference indices from a Term
+collectFuncRefs : {vars : _} -> Term vars -> List Int
+collectFuncRefs (Ref _ _ (Resolved i)) = [i]
+collectFuncRefs (App _ f a) = collectFuncRefs f ++ collectFuncRefs a
+collectFuncRefs _ = []
+
+mutual
+  -- Collect resolved function references from a CaseTree
+  collectTreeRefs : {vars : _} -> CaseTree vars -> List Int
+  collectTreeRefs (STerm _ tm) = collectFuncRefs tm
+  collectTreeRefs (Case _ _ _ alts) = concatMap collectAltRefs alts
+  collectTreeRefs _ = []
+
+  collectAltRefs : {vars : _} -> CaseAlt vars -> List Int
+  collectAltRefs (ConCase _ _ _ ct) = collectTreeRefs ct
+  collectAltRefs (DelayCase _ _ ct) = collectTreeRefs ct
+  collectAltRefs (ConstCase _ ct) = collectTreeRefs ct
+  collectAltRefs (DefaultCase ct) = collectTreeRefs ct
+
+mutual
+  -- Add implicit arguments to case block calls in a Term.
+  -- For each Ref to a modified case block, insert nTypes Erased args
+  -- and nCons Local args (constraint binders) before the original args.
+  addCBCallArgs : {vars : _} -> IntMap () -> Nat -> Nat -> FC ->
+                  Nat -> Term vars -> Term vars
+  addCBCallArgs cbSet nTypes nCons fc depth (Ref rfc nt (Resolved i))
+    = if isJust (lookup i cbSet)
+      then let args = replicate nTypes (Erased fc Placeholder)
+                      ++ mkConstraintLocals nCons nTypes depth fc
+           in apply fc (Ref rfc nt (Resolved i)) args
+      else Ref rfc nt (Resolved i)
+  addCBCallArgs cbSet nTypes nCons fc depth (App afc f a)
+    = App afc (addCBCallArgs cbSet nTypes nCons fc depth f)
+              (addCBCallArgs cbSet nTypes nCons fc depth a)
+  addCBCallArgs cbSet nTypes nCons fc depth (Bind bfc x b sc)
+    = Bind bfc x (map (addCBCallArgs cbSet nTypes nCons fc depth) b)
+                 (addCBCallArgs cbSet nTypes nCons fc (S depth) sc)
+  addCBCallArgs cbSet nTypes nCons fc depth (As afc s as pat)
+    = As afc s (addCBCallArgs cbSet nTypes nCons fc depth as)
+               (addCBCallArgs cbSet nTypes nCons fc depth pat)
+  addCBCallArgs cbSet nTypes nCons fc depth (TDelayed dfc r tm)
+    = TDelayed dfc r (addCBCallArgs cbSet nTypes nCons fc depth tm)
+  addCBCallArgs cbSet nTypes nCons fc depth (TDelay dfc r ty arg)
+    = TDelay dfc r (addCBCallArgs cbSet nTypes nCons fc depth ty)
+                   (addCBCallArgs cbSet nTypes nCons fc depth arg)
+  addCBCallArgs cbSet nTypes nCons fc depth (TForce ffc r tm)
+    = TForce ffc r (addCBCallArgs cbSet nTypes nCons fc depth tm)
+  addCBCallArgs _ _ _ _ _ tm = tm
+
+  -- Apply addCBCallArgs to a CaseTree
+  addCBCallArgsTree : {vars : _} -> IntMap () -> Nat -> Nat -> FC ->
+                      Nat -> CaseTree vars -> CaseTree vars
+  addCBCallArgsTree cbSet nTypes nCons fc depth (Case idx p scTy alts)
+    = Case idx p scTy (map (addCBCallArgsAlt cbSet nTypes nCons fc depth) alts)
+  addCBCallArgsTree cbSet nTypes nCons fc depth (STerm i tm)
+    = STerm i (addCBCallArgs cbSet nTypes nCons fc depth tm)
+  addCBCallArgsTree _ _ _ _ _ t = t
+
+  addCBCallArgsAlt : {vars : _} -> IntMap () -> Nat -> Nat -> FC ->
+                     Nat -> CaseAlt vars -> CaseAlt vars
+  addCBCallArgsAlt cbSet nTypes nCons fc depth (ConCase cn tag args ct)
+    = ConCase cn tag args
+        (addCBCallArgsTree cbSet nTypes nCons fc (depth + length args) ct)
+  addCBCallArgsAlt cbSet nTypes nCons fc depth (DelayCase ty arg ct)
+    = DelayCase ty arg
+        (addCBCallArgsTree cbSet nTypes nCons fc (depth + 2) ct)
+  addCBCallArgsAlt cbSet nTypes nCons fc depth (ConstCase c ct)
+    = ConstCase c (addCBCallArgsTree cbSet nTypes nCons fc depth ct)
+  addCBCallArgsAlt cbSet nTypes nCons fc depth (DefaultCase ct)
+    = DefaultCase (addCBCallArgsTree cbSet nTypes nCons fc depth ct)
+
+-- Transitively collect all case block function indices reachable from
+-- a set of starting function references.
+collectCaseBlocks : {auto c : Ref Ctxt Defs} ->
+                    List Int -> IntMap () -> Core (IntMap ())
+collectCaseBlocks [] visited = pure visited
+collectCaseBlocks (idx :: rest) visited
+  = if isJust (lookup idx visited)
+    then collectCaseBlocks rest visited
+    else do defs <- get Ctxt
+            Just gdef <- lookupCtxtExact (Resolved idx) (gamma defs)
+              | Nothing => collectCaseBlocks rest visited
+            fn <- toFullNames (fullname gdef)
+            if isCB fn
+              then do let PMDef _ _ ct _ _ = definition gdef
+                        | _ => collectCaseBlocks rest (insert idx () visited)
+                      let refs = collectTreeRefs ct
+                      collectCaseBlocks (refs ++ rest) (insert idx () visited)
+              else collectCaseBlocks rest visited
+  where
+    isCB : Name -> Bool
+    isCB (CaseBlock {}) = True
+    isCB (NS _ n) = isCB n
+    isCB _ = False
+
 -- Prepend {0 name : Type} -> Pi binders to a ClosedTerm.
 -- The body has metas replaced with Locals referencing these binders.
 -- Safety of believe_me: the recursive call returns ClosedTerm (Term []),
@@ -1299,6 +1404,28 @@ containsAnyMeta metas (TDelay _ _ ty arg)
 containsAnyMeta metas (TForce _ _ tm) = containsAnyMeta metas tm
 containsAnyMeta _ _ = False
 
+-- Update pat RHS by adding implicit args to case block calls.
+updatePatCBCalls : IntMap () -> Nat -> Nat -> FC ->
+                   (vs ** (Env Term vs, Term vs, Term vs)) ->
+                   (vs ** (Env Term vs, Term vs, Term vs))
+updatePatCBCalls cbSet nTypes nCons fc (vs ** (env, lhs, rhs))
+  = (vs ** (env, lhs, addCBCallArgs cbSet nTypes nCons fc 0 rhs))
+
+-- Like addImplsToPat but for case blocks: no self-call fixing needed.
+addImplsToPatCB : FC -> (implNames : List Name) -> (totalK : Nat) ->
+                  IntMap (Nat, Name) ->
+                  SizeOf implNames ->
+                  (vs ** (Env Term vs, Term vs, Term vs)) ->
+                  (vs' ** (Env Term vs', Term vs', Term vs'))
+addImplsToPatCB fc implNames totalK combinedMap sz (vs ** (env, lhs, rhs))
+  = let wenv = extendEnvWithImpls fc implNames env
+        wlhs = weakenNs sz lhs
+        wrhs = replaceMetasW combinedMap 0 (weakenNs sz rhs)
+        (fn, args) = getFnArgs wlhs
+        erasedArgs = replicate totalK (Erased fc Placeholder)
+        newLhs = apply fc fn (erasedArgs ++ args)
+    in (implNames ++ vs ** (wenv, newLhs, wrhs))
+
 -- Generalise a synthesised type by turning unsolved metas into
 -- universally quantified implicit type parameters and unsolved
 -- BySearch constraints into auto-implicit Pi binders.
@@ -1328,36 +1455,42 @@ generaliseType fc n nidx
                        _ => pure False) metaInts
          -- Find unsolved BySearch constraints referencing the type metas
          let typeMetaSet = fromList (map (\i => (i, ())) unsolved)
-         constraintMetas <- findConstraintMetas typeMetaSet
+         allConstraintMetas <- findConstraintMetas typeMetaSet
          let nTypes = length unsolved
-         let nConstraints = length constraintMetas
-         let totalK = nTypes + nConstraints
          case unsolved of
            [] => pure ()  -- All metas solved; nothing to generalise
            ms => do
+             let PMDef pi cargs treeCT treeRT pats = definition gdef
+               | _ => pure ()
+             -- Deduplicate constraints with the same type (e.g. two Ord ?a
+             -- from separate uses of < and >)
+             let (constraintMetas', dupMap) =
+                   deduplicateConstraints nTypes allConstraintMetas
+             let nConstraints = length constraintMetas'
+             let totalK = nTypes + nConstraints
              -- Assign variable names: a, b, c, ... for type params
              let typeNames = assignNames 0 ms
              -- Assign constraint names: __con0, __con1, ... (internal)
-             let constraintNames = map fst constraintMetas
+             let constraintNames = map fst constraintMetas'
              let allNames = typeNames ++ constraintNames
              -- Build IntMap: meta Int -> (position, name)
              -- Type metas at positions 0..nTypes-1
              let metaMap = buildMap 0 ms typeNames
              -- Constraint metas at positions nTypes..totalK-1
-             let combinedMap = addConstraintsToMap nTypes constraintMetas metaMap
+             -- Also merge in duplicate mappings (pointing to same position)
+             let baseMap = addConstraintsToMap nTypes constraintMetas' metaMap
+             let combinedMap = foldl (\m, (k, v) => insert k v m)
+                                     baseMap (IntMap.toList dupMap)
              -- Replace type metas in the function body type
-             -- (constraint metas don't appear in the type, only in case trees)
              let body = replaceMetas metaMap totalK 0 nty
              -- Build constraint binder types: strip env Pis, replace type metas
              let constraintBinderTypes =
-                   buildConstraintBinderTypes fc nTypes constraintMetas metaMap
+                   buildConstraintBinderTypes fc nTypes constraintMetas' metaMap
              -- Build generalised type:
              -- {0 a : Type} -> ... -> {auto _ : Constraint a} -> ... -> body
              let withConstraints = prependAutoImplPis fc constraintBinderTypes body
              let genTy = prependImplPis fc typeNames withConstraints
              -- Update the PMDef
-             let PMDef pi cargs treeCT treeRT pats = definition gdef
-               | _ => pure ()
              let sz = mkSizeOf allNames
              -- Weaken case trees, replace constraint metas, fix self-calls
              let wCT0 = weakenNs sz treeCT
@@ -1366,7 +1499,6 @@ generaliseType fc n nidx
              let wCT1 = replaceMetasInTree combinedMap 0 wCT0
              let wRT1 = replaceMetasInTree combinedMap 0 wRT0
              -- Fix self-recursive calls to include erased type arguments
-             -- (constraint args are already handled by replaceMetasInTree)
              let wCT = fixSelfCallsTree nidx nTypes fc wCT1
              let wRT = fixSelfCallsTree nidx nTypes fc wRT1
              -- Update pats
@@ -1379,7 +1511,18 @@ generaliseType fc n nidx
                } gdef
              -- Remove generalised metas from hole/guess lists
              traverse_ removeHole ms
-             traverse_ (\(_, ci, _) => removeGuess ci) constraintMetas
+             traverse_ (\(_, ci, _) => removeGuess ci) constraintMetas'
+             -- Remove duplicate constraint metas
+             traverse_ (\(ci, _) => do
+               defs'' <- get Ctxt
+               Just gdef'' <- lookupCtxtExact (Resolved ci) (gamma defs'')
+                 | Nothing => pure ()
+               let erasedRHS : ClosedTerm = Erased fc Placeholder
+               let solvedDef = MkPMDefInfo (SolvedHole 0) True False
+               ignore $ addDef (Resolved ci) $
+                 { definition := PMDef solvedDef Scope.empty
+                     (STerm 0 erasedRHS) (STerm 0 erasedRHS) [] } gdef''
+               removeGuess ci) (IntMap.toList dupMap)
              -- Recompute eraseArgs for the new type
              (es, dtes) <- findErased genTy
              defs' <- get Ctxt
@@ -1387,6 +1530,54 @@ generaliseType fc n nidx
                | Nothing => pure ()
              ignore $ addDef (Resolved nidx) $
                { eraseArgs := es, safeErase := dtes } gdef'
+             -- Propagate generalisation to case blocks: add the same
+             -- implicit type/constraint binders so that constraint metas
+             -- inside case block bodies get replaced with Local refs.
+             let parentRefs = collectTreeRefs wCT
+             cbSet <- collectCaseBlocks parentRefs empty
+             when (not (null (IntMap.toList cbSet))) $ do
+               traverse_ (\(cbidx, _) => do
+                 defs3 <- get Ctxt
+                 Just cbgdef <- lookupCtxtExact (Resolved cbidx) (gamma defs3)
+                   | Nothing => pure ()
+                 let PMDef cbpi cbcargs cbCT cbRT cbpats = definition cbgdef
+                   | _ => pure ()
+                 ncbty <- normalise defs3 [] (type cbgdef)
+                 let cbBody = replaceMetas metaMap totalK 0 ncbty
+                 let cbWC = prependAutoImplPis fc constraintBinderTypes cbBody
+                 let cbGenTy = prependImplPis fc typeNames cbWC
+                 let wcbCT = replaceMetasInTree combinedMap 0 (weakenNs sz cbCT)
+                 let wcbRT = replaceMetasInTree combinedMap 0 (weakenNs sz cbRT)
+                 let wcbPats = map (addImplsToPatCB fc allNames totalK
+                                                     combinedMap sz) cbpats
+                 ignore $ addDef (Resolved cbidx) $
+                   { type := cbGenTy
+                   , definition := PMDef cbpi (allNames ++ cbcargs)
+                                         wcbCT wcbRT wcbPats
+                   } cbgdef
+                 (cbes, cbdtes) <- findErased cbGenTy
+                 defs4 <- get Ctxt
+                 Just cbgdef4 <- lookupCtxtExact (Resolved cbidx) (gamma defs4)
+                   | Nothing => pure ()
+                 ignore $ addDef (Resolved cbidx) $
+                   { eraseArgs := cbes, safeErase := cbdtes } cbgdef4
+                 ) (IntMap.toList cbSet)
+               -- Update call sites: add implicit args to case block calls
+               -- in the parent function and in all modified case blocks.
+               let allToUpdate = nidx :: map fst (IntMap.toList cbSet)
+               traverse_ (\uidx => do
+                 defs5 <- get Ctxt
+                 Just ugdef <- lookupCtxtExact (Resolved uidx) (gamma defs5)
+                   | Nothing => pure ()
+                 let PMDef upi ucargs uCT uRT upats = definition ugdef
+                   | _ => pure ()
+                 let updCT = addCBCallArgsTree cbSet nTypes nConstraints fc 0 uCT
+                 let updRT = addCBCallArgsTree cbSet nTypes nConstraints fc 0 uRT
+                 let updPats = map (updatePatCBCalls cbSet nTypes nConstraints fc)
+                                   upats
+                 ignore $ addDef (Resolved uidx) $
+                   { definition := PMDef upi ucargs updCT updRT updPats } ugdef
+                 ) allToUpdate
              log "declare.def" 5 $
                "Generalised " ++ show n ++ " with "
                ++ show nTypes ++ " type parameter(s) and "
@@ -1433,6 +1624,34 @@ generaliseType fc n nidx
                          then pure (Just (MN "__con" gidx, gidx, stripped))
                          else pure Nothing
                  _ => pure Nothing
+
+    -- Deduplicate constraint metas by type. When multiple BySearch
+    -- constraints have the same type (e.g. two `Ord ?a` from `<` and `>`),
+    -- keep only one binder and map all duplicates to the same position.
+    -- Returns (unique constraints, mapping from duplicate Int to (pos, name))
+    deduplicateConstraints : Nat -> List (Name, Int, ClosedTerm) ->
+                             (List (Name, Int, ClosedTerm), IntMap (Nat, Name))
+    deduplicateConstraints startPos cs = go startPos cs [] empty
+      where
+        -- Check if a type is already in the unique list
+        findDup : ClosedTerm -> Nat -> List (Name, Int, ClosedTerm) ->
+                  Maybe (Nat, Name)
+        findDup _ _ [] = Nothing
+        findDup ty pos ((nm, _, ty') :: rest)
+          = if eqTerm ty ty' then Just (pos, nm)
+            else findDup ty (S pos) rest
+        go : Nat -> List (Name, Int, ClosedTerm) ->
+             List (Name, Int, ClosedTerm) -> IntMap (Nat, Name) ->
+             (List (Name, Int, ClosedTerm), IntMap (Nat, Name))
+        go _ [] acc dupMap = (reverse acc, dupMap)
+        go pos ((nm, ci, ty) :: rest) acc dupMap
+          = case findDup ty startPos acc of
+              Just (dupPos, dupNm) =>
+                -- Duplicate: map this meta to the existing position
+                go pos rest acc (insert ci (dupPos, dupNm) dupMap)
+              Nothing =>
+                -- Unique: add to accum, advance position
+                go (S pos) rest ((nm, ci, ty) :: acc) dupMap
 
     -- Add constraint metas to the metaMap at positions after type metas
     addConstraintsToMap : Nat -> List (Name, Int, ClosedTerm) ->
