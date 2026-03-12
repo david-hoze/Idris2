@@ -1,6 +1,6 @@
 # Progressive Idris — Implementation State
 
-## Test Results: 60/61 passing
+## Test Results: 61/62 passing
 
 ### Block 1: Type Synthesis (15/16)
 
@@ -32,6 +32,7 @@
 | gen002    | PASS   | `const' x y = x` with mixed types | Two type params generalized                 |
 | gen003    | PASS   | `myLength` with different element  | Recursive function, list element generalized|
 | gen004    | PASS   | `add x y = x + y` (Num a => a)    | Typeclass constraint generalized            |
+| gen005    | PASS   | `clamp lo hi x` with nested if     | Ord constraint, case block propagation      |
 
 ### Block 3: Annotation Monotonicity (30/30)
 
@@ -111,6 +112,21 @@ position among new binders and `depth` is the number of existing Bind nodes
 above). This differs from `replaceMetas` which uses `(depth + k - 1) - pos`
 for type terms where new binders are prepended as outer Pi binders.
 
+### Case Block Constraint Propagation
+
+When `if-then-else` (or case expressions) desugar to separate case block
+functions, their constraint metas are global BySearch holes — not local
+environment bindings. `generaliseType` now:
+
+1. Collects all case block functions transitively reachable from the parent
+2. Generalizes each with the same implicit type/constraint Pi binders
+3. Updates all call sites (parent + case blocks) to pass the new implicit args
+4. Deduplicates constraints with identical types (e.g., `Ord ?a` from `<` and `>`)
+
+Key helpers: `collectCaseBlocks`, `addCBCallArgs`/`addCBCallArgsTree`,
+`addImplsToPatCB`, `updatePatCBCalls`, `mkConstraintLocals`,
+`deduplicateConstraints`.
+
 ### Files Modified
 
 - `src/Core/Context/Context.idr` — `HoleFlags.constSolvable`, `SynthesisedType` DefFlag
@@ -132,13 +148,13 @@ correctly recognizes pair syntax, but the constraint `?a ~ ?ret[MkPair ...]`
 is resolved in the wrong direction. Fix: teach `unifyBothApps` to prefer
 `constSolvable` holes.
 
-### Ord constraint inference
+### Ord constraint inference — SOLVED
 
-Functions using `<`, `>`, `compare` on variable arguments fail because `Ord`
-creates multiple interacting constraints (Ord implies Eq superclass). The
-current `findConstraintMetas` doesn't traverse the constraint dependency
-chain. Fix: when collecting BySearch constraints referencing type metas, also
-collect constraints that the first constraint depends on.
+Nested `if-then-else` desugars to case block functions that don't capture
+global BySearch constraint metas. Fixed by propagating generalization to case
+blocks: after generalizing the parent function, all reachable case blocks get
+the same implicit type/constraint binders, and call sites are updated.
+Duplicate constraints (e.g., two `Ord ?a` from `<` and `>`) are deduplicated.
 
 ### Higher-order functions
 

@@ -1042,7 +1042,17 @@ mutual
                       let xbigger = xlocs > ylocs
                                       || (xlocs == ylocs &&
                                            length xargs' <= length yargs')
-                      if (xbigger || umode mode == InMatch) && not (pv xn)
+                      -- When both metas are constSolvable (from
+                      -- synthTypeFromPatterns), prefer to solve the one
+                      -- with more meta-args: it has constructor args from
+                      -- pattern matching that need tryConstantSolve.
+                      xcs <- isConstSolvable xi
+                      ycs <- isConstSolvable yi
+                      let solveX =
+                            if xcs && ycs && length xargs /= length yargs
+                               then length xargs >= length yargs
+                               else xbigger
+                      if (solveX || umode mode == InMatch) && not (pv xn)
                         then unifyApp False mode loc env xfc (NMeta xn xi xargs) xargs'
                                             (NApp yfc (NMeta yn yi yargs) yargs')
                         else unifyApp True mode loc env yfc (NMeta yn yi yargs) yargs'
@@ -1059,6 +1069,15 @@ mutual
                case !(evalClosure defs c) of
                  NApp _ (NLocal {}) _ => pure $ S !(localsIn cs)
                  _ => localsIn cs
+
+      isConstSolvable : Int -> Core Bool
+      isConstSolvable i
+          = do defs <- get Ctxt
+               Just gdef <- lookupCtxtExact (Resolved i) (gamma defs)
+                 | Nothing => pure False
+               case definition gdef of
+                 Hole _ flags => pure (constSolvable flags)
+                 _ => pure False
 
 
   unifyBothApps mode loc env xfc (NMeta xn xi xargs) xargs' yfc fy yargs'
