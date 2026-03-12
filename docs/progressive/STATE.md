@@ -1,6 +1,6 @@
 # Progressive Idris — Implementation State
 
-## Test Results: 20/21 passing
+## Test Results: 60/61 passing
 
 ### Block 1: Type Synthesis (15/16)
 
@@ -14,7 +14,7 @@
 | pat001    | PASS   | `myNot True = False; ...`          | Bool pattern matching                       |
 | pat002    | PASS   | `myAnd True True = True; ...`      | Two-arg Bool patterns                       |
 | pat003    | PASS   | `fromMaybe def Nothing = def; ...` | constSolvable flag solves return type hole  |
-| pat004    | FAIL   | `myFst (x, _) = x`                | Elaboration ordering — see below            |
+| pat004    | FAIL   | `myFst (x, _) = x`                | Elaboration ordering — see Known Limitations|
 | pat005    | PASS   | `myLength [] = 0; ...`             | Integer defaulting for numeric literals     |
 | case001   | PASS   | `test x = case not x of ...`      | Case expression with Prelude-typed scrutinee|
 | let001    | PASS   | `addDouble x y = let s = ...`     | Let binding                                 |
@@ -23,182 +23,136 @@
 | rec001    | PASS   | `factorial 0 = 1; ...`             | Recursive with numeric patterns             |
 | rec002    | PASS   | `fib 0 = 0; fib 1 = 1; ...`       | Multi-clause recursion (fibonacci)          |
 
-### Block 2: Show Inferred Types (1/1)
+### Block 2: Show Inferred Types + Type Generalization (5/5)
 
 | Test      | Status | Description                        | Notes                                      |
 |-----------|--------|------------------------------------|---------------------------------------------|
 | infer001  | PASS   | `--show-inferred-types` flag       | Displays types for unannotated definitions  |
-
-### Block 2: Type Generalization (4/4)
-
-| Test      | Status | Description                        | Notes                                      |
-|-----------|--------|------------------------------------|---------------------------------------------|
 | gen001    | PASS   | `id' x = x` with Int and String   | Single type param, polymorphic usage        |
 | gen002    | PASS   | `const' x y = x` with mixed types | Two type params generalized                 |
 | gen003    | PASS   | `myLength` with different element  | Recursive function, list element generalized|
-| gen004    | PASS   | `add x y = x + y` (not generalized)| Num constraint resolves to Integer          |
+| gen004    | PASS   | `add x y = x + y` (Num a => a)    | Typeclass constraint generalized            |
 
-## Block 2 Feature: `--show-inferred-types`
+### Block 3: Annotation Monotonicity (30/30)
 
-Compiler flag that displays resolved type signatures for functions without
-explicit type annotations. Example:
+| Group    | Pattern                            | v0 | v1 | v2 | Notes                    |
+|----------|------------------------------------|----|----|-----|--------------------------|
+| mono001  | `add x y = x + y`                 | 7  | 7  | 7   | Num constraint           |
+| mono002  | `flipBool True/False`              | F  | F  | F   | Bool patterns            |
+| mono003  | `myLength []/_::xs`                | 3  | 3  | 3   | List recursive           |
+| mono004  | `fib 0/1/n`                        | 55 | 55 | 55  | Numeric literal patterns |
+| mono005  | `id' x = x`                       | ✓  | ✓  | ✓   | Polymorphic identity     |
+| mono006  | `sumSq` with `where sq`            | 25 | 25 | 25  | Where clause             |
+| mono007  | `case not x of`                    | yes| yes| yes | Case expression          |
+| mono008  | `fromMaybe'` Nothing/Just          | ✓  | ✓  | ✓   | Maybe patterns           |
+| mono009  | `const' x y = x`                  | ✓  | ✓  | ✓   | Polymorphic, multi-type  |
+| mono010  | `(x+y)*(x-y)`                     | 16 | 16 | 16  | Multiple Num ops         |
 
-```
-$ idris2 --show-inferred-types --check myfile.idr
-1/1: Building myfile (myfile.idr)
-add : Integer -> Integer -> Integer
-myNot : Bool -> Bool
-id' : a -> a
-```
+All 30 tests produce identical output across v0 (unannotated), v1 (partially
+annotated), and v2 (fully annotated).
 
-### Implementation
+### Block 3: Propagation (5/5)
 
-- `SynthesisedType` DefFlag added to `Context.idr` (TTC tag 14)
-- Flag set in both `lookupOrAddAlias` (alias mechanism) and
-  `synthTypeFromPatterns` (multi-clause/constructor patterns)
-- `showInferredTypes : Bool` added to `Session` in `Options.idr`
-- `--show-inferred-types` CLOpt in `CommandLine.idr`
-- `showSynthesisedTypes` function in `ProcessIdr.idr` iterates over
-  current-module definitions (firstEntry..nextEntry), filters by
-  `SynthesisedType` flag, displays via `displayType` from `Doc.Display`
-- Only shown for current module's own definitions, not imports
-- Correctly excludes user-annotated definitions
+| Test     | Status | Description                        |
+|----------|--------|------------------------------------|
+| prop001  | PASS   | Unannotated calls typed function   |
+| prop002  | PASS   | Unannotated uses string concat     |
+| prop003  | PASS   | Chain through typed root           |
+| prop004  | PASS   | Maybe constructor patterns         |
+| prop005  | PASS   | Typed where-clause helper          |
 
-## Block 2 Feature: Type Generalization
+### Block 3: Error on Annotation Conflict (5/5)
 
-After elaboration, unsolved metavariables in synthesised types are
-generalized to universally quantified implicit type parameters.
+| Test     | Status | Expected Error                     |
+|----------|--------|------------------------------------|
+| err001   | PASS   | `Num String` (String + arithmetic) |
+| err002   | PASS   | `Num String` (String return + lit) |
+| err003   | PASS   | `Integer/String` mismatch (++)     |
+| err004   | PASS   | `Bool/Integer` mismatch (patterns) |
+| err005   | PASS   | `Integer/String` at call site      |
 
-Example: `id' x = x` infers `{0 a : Type} -> a -> a`
+### Tutorial (4 stages, identical output)
 
-### Implementation (`src/TTImp/ProcessDef.idr`)
+| Stage  | Annotations              | Output Identical |
+|--------|--------------------------|------------------|
+| Stage0 | Zero                     | ✓                |
+| Stage1 | API boundary             | ✓                |
+| Stage2 | Full with polymorphism   | ✓                |
+| Stage3 | Dependent types+totality | ✓                |
 
-Located after `compileRunTime` in `processDef` — runs AFTER the runtime
-case tree is built (to avoid `mkRunTime`'s `scopeEq` check failing on
-modified cargs/rargs).
+## Architecture
 
-- `collectMetaInts`: walks a Term collecting unique Meta indices in
-  first-appearance order
-- `replaceMetas`: replaces Meta nodes with Local references using computed
-  de Bruijn indices. Formula: `(depth + k - 1) - pos` where `depth` is
-  the number of existing Bind nodes above, `k` is the count of new implicit
-  binders, and `pos` is the meta's 0-indexed position among new binders.
-  Uses `believe_me` for the `IsVar` proof (technical debt — erased at
-  runtime, but not statically verified)
-- `prependImplPis`: wraps a ClosedTerm with `{0 name : Type} ->` Pi
-  binders. Uses `believe_me` for scope cast (safe because de Bruijn indices
-  in body already account for all binders)
-- `addErasedSelfCalls`: walks a Term and adds k erased applications to
-  self-recursive calls (`Ref Func (Resolved nidx)`). Necessary because
-  `weakenNs` only shifts indices, not adds args to call sites
-- `fixSelfCallsTree` / `fixSelfCallsAlt`: applies `addErasedSelfCalls` to
-  all STerm nodes in a CaseTree
-- `generaliseType`: main orchestration function:
-  1. Normalises the type to resolve solved metas
-  2. Collects unsolved meta indices
-  3. Filters to only genuinely unsolved holes
-  4. Assigns variable names (a, b, c, ...)
-  5. Replaces metas with Locals, prepends implicit Pi binders
-  6. Weakens both case trees, then fixes self-recursive calls
-  7. Updates pats with extended env, modified LHS/RHS
-  8. Removes generalised metas from hole list (`removeHole`)
-  9. Recomputes `eraseArgs` via `findErased`
+### Typeclass Constraint Inference (3-phase)
 
-### Guards
+**Phase 1** (during elaboration): `synthElabMode` flag in UState suppresses
+all `BySearch` constraints during `Defaults` and `LastChance` solving modes.
+This prevents typeclass constraints (like `Num ?a`) from eagerly resolving
+type metas to `Integer`.
 
-- Only runs for definitions with `SynthesisedType` flag
-- Only runs for top-level user names (`UN` optionally wrapped in `NS`) —
-  skips nested functions (`Nested`), case blocks (`CaseBlock`),
-  with blocks (`WithBlock`), and machine names (`MN`)
+**Phase 2** (after elaboration, before pattern compilation): Turn off
+`synthElabMode`, compute the function's unsolved type metas, protect them
+with `noSolve`, then retry full constraint solving (`Normal → Defaults →
+LastChance`). This lets non-type-meta constraints (like case block
+constraints) resolve normally while keeping type metas unsolved for
+generalization.
 
-## Block 1 Changes
+**Literal pattern exception**: `clausesHaveLiteralPats` detects numeric/string
+patterns in LHS. When present, type metas are NOT protected — they must
+resolve to concrete types for pattern matching.
 
-### 1. `src/TTImp/ProcessDef.idr` — `synthTypeFromPatterns`
+**Zero-argument guard**: Constants like `bar = 3` don't get `SynthesisedType`
+since there's nothing to generalize.
 
-Extracts type information from constructor patterns in function definitions
-that lack type signatures. Scans LHS arguments for constructor heads to
-determine argument types, and scans RHS for constructor heads to determine
-return type.
+### replaceMetasW (case tree meta replacement)
 
-- `resolveConName`: looks up a constructor name and returns its parent type
-- `guessFromPat`: tries to guess a type from a pattern, handling `IAlternative`
-  (pair syntax, etc.) by checking alternatives for constructor heads
-- `guessFromClauses`: scans all clauses for constructor patterns at a given
-  argument position
-- `guessAllArgTypes`: builds argument type list from constructor scanning
-- `isNumericRHS`: detects numeric literal expressions in RHS (IPrimVal,
-  IAlternative with UniqueDefault, fromInteger applications)
-- `guessReturnType`: scans RHS of clauses for constructor return types;
-  falls back to `Integer` when numeric literals are detected
-- `markHoleConstSolvable` / `markSynthHoles`: after processType creates the
-  type, walks it to mark all unsolved holes as `constSolvable`
-- `buildSynthType`: assembles `_ -> _ -> ... -> RetTy` from gathered info
+After `weakenNs`, new binders sit at low indices (0..k-1), not high. The
+formula for weakened terms is `pos + depth` (where `pos` is the meta's
+position among new binders and `depth` is the number of existing Bind nodes
+above). This differs from `replaceMetas` which uses `(depth + k - 1) - pos`
+for type terms where new binders are prepended as outer Pi binders.
 
-### 2. `src/Core/Context/Context.idr` — `HoleFlags.constSolvable`
+### Files Modified
 
-Added `constSolvable : Bool` field to `HoleFlags`. When set, the unifier is
-allowed to solve the hole as a constant function even when `patternEnv` fails
-(i.e., when metavar arguments include constructors from pattern matching).
-
-This flag is only set by `synthTypeFromPatterns` on holes it creates, so it
-does not affect normal metavariable resolution (interface search, implicit
-arguments, etc.). This eliminates the 66-regression problem from the previous
-untargeted constant-function approach.
-
-### 3. `src/Core/Unify.idr` — `tryConstantSolve`
-
-When `patternEnv` fails for a `constSolvable` hole:
-1. Quote the solution and check if `shrink tm none` succeeds (closed term)
-2. Run occurs check
-3. Build a constant function `\x1 => \x2 => ... => solution` by wrapping
-   the closed solution in lambdas matching the metavar's Pi-binder type
-4. Install the definition via `addDef` / `removeHole`
+- `src/Core/Context/Context.idr` — `HoleFlags.constSolvable`, `SynthesisedType` DefFlag
+- `src/Core/Context/TTC.idr` — TTC tag 14 for `SynthesisedType`
+- `src/Core/Unify.idr` — `tryConstantSolve`, Phase 1 suppression in `retryGuess`
+- `src/Core/UnifyState.idr` — `synthElabMode`, `synthTypeMetas`, `containsMetaFrom`, `hasMeta`
+- `src/TTImp/ProcessDef.idr` — `synthTypeFromPatterns`, `generaliseType`, Phase 2 logic, `clausesHaveLiteralPats`, `replaceMetasW`
+- `src/Idris/CommandLine.idr` — `--show-inferred-types` flag
+- `src/Idris/Session.idr` / `Options.idr` — `showInferredTypes` session option
+- `src/Idris/ProcessIdr.idr` — `showSynthesisedTypes`
 
 ## Known Limitations
 
 ### pat004: Pair matching — Elaboration ordering
 
-```
-myFst (x, _) = x
-main : IO ()
-main = printLn (myFst (42, "hello"))
-Error: Can't solve constraint between: Integer and ?a [no locals in scope]
-```
+`myFst (x, _) = x` fails because `unifyBothApps` picks the wrong hole
+orientation when both sides have unsolved metas. The `IAlternative` handling
+correctly recognizes pair syntax, but the constraint `?a ~ ?ret[MkPair ...]`
+is resolved in the wrong direction. Fix: teach `unifyBothApps` to prefer
+`constSolvable` holes.
 
-The `IAlternative` handling in `guessFromPat` correctly recognizes pair syntax
-and generates `Pair ?a ?b` as the argument type. The `constSolvable` flag on
-the return type hole works. However, the constraint `?a ~ ?ret[MkPair ...]`
-has an elaboration ordering problem:
+### Ord constraint inference
 
-1. `unifyBothApps` picks `?a` (zero args) as the hole to solve, not `?ret`
-2. The RHS `?ret[MkPair ?a ?b x y]` can't shrink to `Term []` (local vars)
-3. The constraint is postponed
-4. During `main` elaboration, `printLn` triggers `Show ?a` interface search
-   before `fromInteger 42` resolves `?a` to `Integer`
-5. The `Show ?a` search fails, and the error is recorded as a `Guess` failure
-
-Fix paths:
-- Teach `unifyBothApps` to prefer `constSolvable` holes
-- Or restructure dependent type parameter interaction with `constSolvable`
+Functions using `<`, `>`, `compare` on variable arguments fail because `Ord`
+creates multiple interacting constraints (Ord implies Eq superclass). The
+current `findConstraintMetas` doesn't traverse the constraint dependency
+chain. Fix: when collecting BySearch constraints referencing type metas, also
+collect constraints that the first constraint depends on.
 
 ### Higher-order functions
 
 `apply f x = f x` and `compose f g x = f (g x)` require Hindley-Milner
-inference to determine that `f` is a function type. Similarly,
-`myMap f [] = []; myMap f (x :: xs) = f x :: myMap f xs` cannot be
-synthesized because the relation between `f`, `x`, and the list element
-type requires HM-style unification.
-
-### Typeclass operations on unresolved types
-
-Functions using `<`, `>`, `compare` etc. on variable arguments fail because
-`Ord` search runs before the argument type is resolved from call-site literals.
-Functions using `+`, `*` work because `Num` search is handled differently.
+inference to determine that `f` is a function type. This is fundamentally
+different from constructor-driven synthesis.
 
 ### Technical debt
 
-- `believe_me` is used for `IsVar` proofs in `replaceMetas` and for scope
-  casts in `prependImplPis`. These are representationally correct (de Bruijn
-  indices are computed properly, and the terms are closed) but not statically
-  verified. An off-by-one error would produce a compiler crash rather than
-  a compile-time type error.
+`believe_me` is used for `IsVar` proofs in `replaceMetas`/`replaceMetasW` and
+for scope casts in `prependImplPis`. These are representationally correct but
+not statically verified.
+
+## Full Test Suite
+
+Zero regressions on the Idris 2 test suite (705+ tests). The only failures
+are pre-existing: `chez014` and `channels009` (Windows-specific).
