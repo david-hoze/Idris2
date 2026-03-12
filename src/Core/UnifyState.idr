@@ -106,6 +106,13 @@ record UState where
                 -- The 'Int' is the resolved name.
                 -- NameMap () is the set of local hints at the point of delay
   logging : Bool
+  synthElabMode : Bool -- When True AND synthTypeMetas is empty, skip ALL
+                       -- BySearch constraints in Defaults/LastChance.
+                       -- When True AND synthTypeMetas is non-empty, only
+                       -- skip constraints whose types contain metas from set.
+  synthTypeMetas : IntMap () -- Set of specific type metas to preserve.
+                             -- Empty during initial elaboration (suppress all),
+                             -- populated after elaboration for selective retry.
 
 export
 initUState : UState
@@ -122,6 +129,8 @@ initUState = MkUState
   , nextConstraint = 0
   , delayedElab = []
   , logging = False
+  , synthElabMode = False
+  , synthTypeMetas = empty
   }
 
 export
@@ -560,6 +569,29 @@ checkDelayedHoles
             then do pure (Just (UnsolvedHoles (map snd hs)))
             else pure Nothing
 
+-- Check if a term contains any Meta nodes (unsolved metavariables).
+-- Check if a term contains any Meta from a specific set of indices.
+export
+containsMetaFrom : IntMap () -> Term vars -> Bool
+containsMetaFrom s (Meta _ _ i _) = isJust (lookup i s)
+containsMetaFrom s (App _ f a) = containsMetaFrom s f || containsMetaFrom s a
+containsMetaFrom s (Bind _ _ b sc)
+  = containsMetaFrom s (binderType b) || containsMetaFrom s sc
+containsMetaFrom s (TDelayed _ _ tm) = containsMetaFrom s tm
+containsMetaFrom s (TDelay _ _ ty arg) = containsMetaFrom s ty || containsMetaFrom s arg
+containsMetaFrom s (TForce _ _ tm) = containsMetaFrom s tm
+containsMetaFrom _ _ = False
+
+export
+hasMeta : Term vars -> Bool
+hasMeta (Meta _ _ _ _) = True
+hasMeta (App _ f a) = hasMeta f || hasMeta a
+hasMeta (Bind _ _ b sc) = hasMeta (binderType b) || hasMeta sc
+hasMeta (TDelayed _ _ tm) = hasMeta tm
+hasMeta (TDelay _ _ ty arg) = hasMeta ty || hasMeta arg
+hasMeta (TForce _ _ tm) = hasMeta tm
+hasMeta _ = False
+
 -- A hole is 'valid' - i.e. okay to leave unsolved for later - as long as it's
 -- not guarded by a unification problem (in which case, report that the unification
 -- problem is unsolved) and it doesn't depend on an implicit pattern variable
@@ -574,10 +606,15 @@ checkValidHole base (idx, (fc, n))
               | Nothing => pure ()
          case definition gdef of
               BySearch {} =>
-                  do defs <- get Ctxt
-                     Just ty <- lookupTyExact n (gamma defs)
-                          | Nothing => pure ()
-                     throw (CantSolveGoal fc (gamma defs) Env.empty ty Nothing)
+                  do ust <- get UST
+                     if synthElabMode ust
+                        then pure () -- Skip during synth elaboration;
+                                     -- non-type-meta constraints are retried
+                                     -- after elaboration in processDef
+                        else do defs <- get Ctxt
+                                Just ty <- lookupTyExact n (gamma defs)
+                                     | Nothing => pure ()
+                                throw (CantSolveGoal fc (gamma defs) Env.empty ty Nothing)
               Guess tm envb (con :: _) =>
                   do ust <- get UST
                      let Just c = lookup con (constraints ust)

@@ -12,6 +12,7 @@ import Core.Termination
 import Core.Termination.CallGraph
 import Core.Transform
 import Core.Value
+import Core.Unify
 import Core.UnifyState
 
 import Idris.REPL.Opts
@@ -859,8 +860,11 @@ synthTypeFromPatterns eopts nest env fc n cs
           Just gdef <- lookupCtxtExact n (gamma defs)
             | Nothing => pure ()
           markSynthHoles (type gdef)
-       -- Mark this definition as having a synthesised type
-       setFlag fc n SynthesisedType
+       -- Mark this definition as having a synthesised type, but only if
+       -- it has function arguments. Zero-argument constants (like `x = 3`)
+       -- don't benefit from type generalisation and should just default.
+       when (not (null explicitArgs)) $
+         setFlag fc n SynthesisedType
        defs <- get Ctxt
        lookupCtxtExact n (gamma defs)
   where
@@ -1049,7 +1053,8 @@ lookupOrAddAlias eopts nest env fc n [cl@(PatClause _ lhs _)]
        processType eopts nest env fc top Public []
           -- See #3409
           $ Mk [fc, MkFCVal fc n] $ holeyType (map snd args)
-       setFlag fc n SynthesisedType
+       when (not (null args)) $
+         setFlag fc n SynthesisedType
        defs <- get Ctxt
        lookupCtxtExact n (gamma defs)
 
@@ -1112,6 +1117,9 @@ collectMetaInts seen _ = (seen, [])
 -- metaMap: meta Int -> (position in new binder sequence, name)
 -- k: number of new implicit binders being prepended
 -- depth: number of existing Bind nodes above the current position
+-- Replace Metas in TYPE terms (not yet weakened, indices prepended later
+-- via believe_me). New binders end up at the high end of the scope.
+-- Formula: idx = (depth + k - 1) - pos
 replaceMetas : {vars : _} -> IntMap (Nat, Name) -> (k : Nat) -> (depth : Nat) ->
                Term vars -> Term vars
 replaceMetas mm k depth (Meta fc n i _)
@@ -1135,6 +1143,32 @@ replaceMetas mm k depth (TDelay fc r ty arg)
 replaceMetas mm k depth (TForce fc r tm)
   = TForce fc r (replaceMetas mm k depth tm)
 replaceMetas _ _ _ tm = tm
+
+-- Replace Metas in WEAKENED terms (case trees, pats RHS). After weakenNs,
+-- new binders are at the low end of the scope (indices 0..k-1).
+-- Formula: idx = pos + depth  (depth tracks inner Binds)
+replaceMetasW : {vars : _} -> IntMap (Nat, Name) -> (depth : Nat) ->
+                Term vars -> Term vars
+replaceMetasW mm depth (Meta fc n i _)
+  = case lookup i mm of
+      Just (pos, nm) =>
+        let idx = pos + depth in
+        Local {name = nm} fc Nothing idx (believe_me (the Nat 0))
+      Nothing => Meta fc n i []
+replaceMetasW mm depth (Bind fc x b sc)
+  = Bind fc x (map (replaceMetasW mm depth) b)
+               (replaceMetasW mm (S depth) sc)
+replaceMetasW mm depth (App fc f a)
+  = App fc (replaceMetasW mm depth f) (replaceMetasW mm depth a)
+replaceMetasW mm depth (As fc s as pat)
+  = As fc s (replaceMetasW mm depth as) (replaceMetasW mm depth pat)
+replaceMetasW mm depth (TDelayed fc r tm)
+  = TDelayed fc r (replaceMetasW mm depth tm)
+replaceMetasW mm depth (TDelay fc r ty arg)
+  = TDelay fc r (replaceMetasW mm depth ty) (replaceMetasW mm depth arg)
+replaceMetasW mm depth (TForce fc r tm)
+  = TForce fc r (replaceMetasW mm depth tm)
+replaceMetasW _ _ tm = tm
 
 -- Add erased applications to self-recursive calls in a term.
 -- After generalisation, the function has k extra erased type arguments,
@@ -1201,6 +1235,37 @@ prependImplPis fc (nm :: rest) body
   = Bind fc nm (Pi fc erased Implicit (TType fc (MN "top" 0)))
     (believe_me $ prependImplPis fc rest body)
 
+-- Prepend {auto name : constraintTy} -> Pi binders to a ClosedTerm.
+-- Same believe_me justification as prependImplPis.
+prependAutoImplPis : FC -> List (Name, ClosedTerm) -> ClosedTerm -> ClosedTerm
+prependAutoImplPis fc [] body = body
+prependAutoImplPis fc ((nm, cty) :: rest) body
+  = Bind fc nm (Pi fc top AutoImplicit cty)
+    (believe_me $ prependAutoImplPis fc rest body)
+
+-- Walk a CaseTree replacing Meta nodes using replaceMetasW (weakened terms).
+-- depth tracks inner binders (ConCase/DelayCase pattern vars) that shift
+-- the new binder indices upward.
+mutual
+  replaceMetasInTree : {vars : _} -> IntMap (Nat, Name) -> Nat ->
+                       CaseTree vars -> CaseTree vars
+  replaceMetasInTree mm depth (Case idx p scTy alts)
+    = Case idx p scTy (map (replaceMetasInAlt mm depth) alts)
+  replaceMetasInTree mm depth (STerm i tm)
+    = STerm i (replaceMetasW mm depth tm)
+  replaceMetasInTree _ _ t = t
+
+  replaceMetasInAlt : {vars : _} -> IntMap (Nat, Name) -> Nat ->
+                      CaseAlt vars -> CaseAlt vars
+  replaceMetasInAlt mm depth (ConCase cn tag args ct)
+    = ConCase cn tag args (replaceMetasInTree mm (depth + length args) ct)
+  replaceMetasInAlt mm depth (DelayCase ty arg ct)
+    = DelayCase ty arg (replaceMetasInTree mm (depth + 2) ct)
+  replaceMetasInAlt mm depth (ConstCase c ct)
+    = ConstCase c (replaceMetasInTree mm depth ct)
+  replaceMetasInAlt mm depth (DefaultCase ct)
+    = DefaultCase (replaceMetasInTree mm depth ct)
+
 -- Extend an Env with implicit Pi binders at the front.
 -- The new binders have type Type (which doesn't reference any locals),
 -- so existing binder types in the env don't need weakening.
@@ -1211,8 +1276,33 @@ extendEnvWithImpls fc (n :: ns) env
   = Pi fc erased Implicit (TType fc (MN "top" 0))
     :: extendEnvWithImpls fc ns env
 
+-- Strip all Pi/Let binders from a ClosedTerm to get the innermost body.
+-- Used to extract the bare constraint type from abstractEnvType'd BySearch types.
+-- Safety of believe_me: the body doesn't reference the stripped binders
+-- (constraint types like Num ?a only reference global metas, not locals).
+stripPis : ClosedTerm -> ClosedTerm
+stripPis (Bind _ _ (Pi _ _ _ _) sc) = stripPis (believe_me sc)
+stripPis (Bind _ _ (Let _ _ _ _) sc) = stripPis (believe_me sc)
+stripPis tm = tm
+
+-- Check if a ClosedTerm contains any Meta with an index in the given set
+containsAnyMeta : IntMap () -> ClosedTerm -> Bool
+containsAnyMeta metas (Meta _ _ i _)
+  = isJust (lookup i metas)
+containsAnyMeta metas (App _ f a)
+  = containsAnyMeta metas f || containsAnyMeta metas a
+containsAnyMeta metas (Bind _ _ b sc)
+  = containsAnyMeta metas (binderType b) || containsAnyMeta metas (believe_me sc)
+containsAnyMeta metas (TDelayed _ _ tm) = containsAnyMeta metas tm
+containsAnyMeta metas (TDelay _ _ ty arg)
+  = containsAnyMeta metas ty || containsAnyMeta metas arg
+containsAnyMeta metas (TForce _ _ tm) = containsAnyMeta metas tm
+containsAnyMeta _ _ = False
+
 -- Generalise a synthesised type by turning unsolved metas into
--- universally quantified implicit type parameters.
+-- universally quantified implicit type parameters and unsolved
+-- BySearch constraints into auto-implicit Pi binders.
+-- e.g. add x y = x + y  =>  {0 a : Type} -> Num a => a -> a -> a
 generaliseType : {auto c : Ref Ctxt Defs} ->
                  {auto u : Ref UST UState} ->
                  FC -> Name -> Int -> Core ()
@@ -1236,35 +1326,60 @@ generaliseType fc n nidx
                      case definition mgdef of
                        Hole _ _ => pure True
                        _ => pure False) metaInts
+         -- Find unsolved BySearch constraints referencing the type metas
+         let typeMetaSet = fromList (map (\i => (i, ())) unsolved)
+         constraintMetas <- findConstraintMetas typeMetaSet
+         let nTypes = length unsolved
+         let nConstraints = length constraintMetas
+         let totalK = nTypes + nConstraints
          case unsolved of
            [] => pure ()  -- All metas solved; nothing to generalise
            ms => do
-             let k = length ms
-             -- Assign variable names: a, b, c, ...
-             let names = assignNames 0 ms
+             -- Assign variable names: a, b, c, ... for type params
+             let typeNames = assignNames 0 ms
+             -- Assign constraint names: __con0, __con1, ... (internal)
+             let constraintNames = map fst constraintMetas
+             let allNames = typeNames ++ constraintNames
              -- Build IntMap: meta Int -> (position, name)
-             let metaMap = buildMap 0 ms names
-             -- Build generalised type
-             let body = replaceMetas metaMap k 0 nty
-             let genTy = prependImplPis fc names body
+             -- Type metas at positions 0..nTypes-1
+             let metaMap = buildMap 0 ms typeNames
+             -- Constraint metas at positions nTypes..totalK-1
+             let combinedMap = addConstraintsToMap nTypes constraintMetas metaMap
+             -- Replace type metas in the function body type
+             -- (constraint metas don't appear in the type, only in case trees)
+             let body = replaceMetas metaMap totalK 0 nty
+             -- Build constraint binder types: strip env Pis, replace type metas
+             let constraintBinderTypes =
+                   buildConstraintBinderTypes fc nTypes constraintMetas metaMap
+             -- Build generalised type:
+             -- {0 a : Type} -> ... -> {auto _ : Constraint a} -> ... -> body
+             let withConstraints = prependAutoImplPis fc constraintBinderTypes body
+             let genTy = prependImplPis fc typeNames withConstraints
              -- Update the PMDef
              let PMDef pi cargs treeCT treeRT pats = definition gdef
                | _ => pure ()
-             let sz = mkSizeOf names
-             -- Update pats: extend env, weaken terms, add erased apps to LHS/RHS
-             let newPats = map (addImplsToPat fc nidx names k sz) pats
-             -- Weaken case trees to account for new args, then fix
-             -- self-recursive calls to include erased type arguments
-             let wCT = fixSelfCallsTree nidx k fc (weakenNs sz treeCT)
-             let wRT = fixSelfCallsTree nidx k fc (weakenNs sz treeRT)
+             let sz = mkSizeOf allNames
+             -- Weaken case trees, replace constraint metas, fix self-calls
+             let wCT0 = weakenNs sz treeCT
+             let wRT0 = weakenNs sz treeRT
+             -- Replace metas in case trees with Local refs to new binders
+             let wCT1 = replaceMetasInTree combinedMap 0 wCT0
+             let wRT1 = replaceMetasInTree combinedMap 0 wRT0
+             -- Fix self-recursive calls to include erased type arguments
+             -- (constraint args are already handled by replaceMetasInTree)
+             let wCT = fixSelfCallsTree nidx nTypes fc wCT1
+             let wRT = fixSelfCallsTree nidx nTypes fc wRT1
+             -- Update pats
+             let newPats = map (addImplsToPat fc nidx allNames totalK nTypes
+                                              combinedMap sz) pats
              -- Store updated definition
              ignore $ addDef (Resolved nidx) $
                { type := genTy
-               , definition := PMDef pi (names ++ cargs) wCT wRT newPats
+               , definition := PMDef pi (allNames ++ cargs) wCT wRT newPats
                } gdef
-             -- Remove the generalised metas from the hole list so
-             -- they aren't reported as unsolved
+             -- Remove generalised metas from hole/guess lists
              traverse_ removeHole ms
+             traverse_ (\(_, ci, _) => removeGuess ci) constraintMetas
              -- Recompute eraseArgs for the new type
              (es, dtes) <- findErased genTy
              defs' <- get Ctxt
@@ -1274,7 +1389,8 @@ generaliseType fc n nidx
                { eraseArgs := es, safeErase := dtes } gdef'
              log "declare.def" 5 $
                "Generalised " ++ show n ++ " with "
-               ++ show k ++ " type parameter(s)"
+               ++ show nTypes ++ " type parameter(s) and "
+               ++ show nConstraints ++ " constraint(s)"
   where
     isTopLevelUser : Name -> Bool
     isTopLevelUser (NS _ n) = isTopLevelUser n
@@ -1293,19 +1409,95 @@ generaliseType fc n nidx
     buildMap pos (mi :: ms) (nm :: nms)
       = insert mi (pos, nm) (buildMap (S pos) ms nms)
 
-    addImplsToPat : FC -> Int -> (implNames : List Name) -> (k : Nat) ->
+    -- Find BySearch constraints in UST guesses whose types reference
+    -- any of the given type metas. Returns (name, index, stripped type).
+    findConstraintMetas : IntMap () ->
+                          Core (List (Name, Int, ClosedTerm))
+    findConstraintMetas typeMetaSet
+      = do ust <- get UST
+           defs <- get Ctxt
+           let gs = toList (guesses ust)
+           results <- traverse (checkGuess defs) gs
+           pure (mapMaybe id results)
+      where
+        checkGuess : Defs -> (Int, (FC, Name)) ->
+                     Core (Maybe (Name, Int, ClosedTerm))
+        checkGuess defs (gidx, (gfc, gname))
+          = do Just gdef <- lookupCtxtExact (Resolved gidx) (gamma defs)
+                 | Nothing => pure Nothing
+               case definition gdef of
+                 BySearch {} =>
+                   do ngty <- normalise defs [] (type gdef)
+                      let stripped = stripPis ngty
+                      if containsAnyMeta typeMetaSet stripped
+                         then pure (Just (MN "__con" gidx, gidx, stripped))
+                         else pure Nothing
+                 _ => pure Nothing
+
+    -- Add constraint metas to the metaMap at positions after type metas
+    addConstraintsToMap : Nat -> List (Name, Int, ClosedTerm) ->
+                          IntMap (Nat, Name) -> IntMap (Nat, Name)
+    addConstraintsToMap _ [] mm = mm
+    addConstraintsToMap pos ((nm, ci, _) :: rest) mm
+      = addConstraintsToMap (S pos) rest (insert ci (pos, nm) mm)
+
+    -- Build constraint binder types by replacing type metas with Locals.
+    -- For constraint j (0-indexed), k = nTypes + j because there are
+    -- nTypes type binders and j constraint binders above it.
+    buildConstraintBinderTypes : FC -> Nat ->
+                                 List (Name, Int, ClosedTerm) ->
+                                 IntMap (Nat, Name) ->
+                                 List (Name, ClosedTerm)
+    buildConstraintBinderTypes fc nTypes cs typeMetaMap
+      = go 0 cs
+      where
+        go : Nat -> List (Name, Int, ClosedTerm) -> List (Name, ClosedTerm)
+        go _ [] = []
+        go j ((nm, _, stripped) :: rest)
+          = let replaced = replaceMetas typeMetaMap (nTypes + j) 0 stripped
+            in (nm, replaced) :: go (S j) rest
+
+    addImplsToPat : FC -> Int -> (implNames : List Name) -> (totalK : Nat) ->
+                    (nTypes : Nat) -> IntMap (Nat, Name) ->
                     SizeOf implNames ->
                     (vs ** (Env Term vs, Term vs, Term vs)) ->
                     (vs' ** (Env Term vs', Term vs', Term vs'))
-    addImplsToPat fc fidx implNames k sz (vs ** (env, lhs, rhs))
+    addImplsToPat fc fidx implNames totalK nTypes combinedMap sz
+                  (vs ** (env, lhs, rhs))
       = let wenv = extendEnvWithImpls fc implNames env
             wlhs = weakenNs sz lhs
-            wrhs = addErasedSelfCalls fidx k fc (weakenNs sz rhs)
-            -- Prepend erased applications for the implicit args to the LHS
+            wrhs0 = weakenNs sz rhs
+            -- Replace metas with Locals in the weakened RHS
+            wrhs1 = replaceMetasW combinedMap 0 wrhs0
+            -- Fix self-recursive calls (type params only)
+            wrhs = addErasedSelfCalls fidx nTypes fc wrhs1
+            -- Prepend erased/placeholder applications for the implicit args
             (fn, args) = getFnArgs wlhs
-            erasedArgs = replicate k (Erased fc Placeholder)
+            erasedArgs = replicate totalK (Erased fc Placeholder)
             newLhs = apply fc fn (erasedArgs ++ args)
         in (implNames ++ vs ** (wenv, newLhs, wrhs))
+
+-- Check if a RawImp term contains any literal values (IPrimVal).
+-- Used to detect numeric/string literal patterns in clause LHS.
+hasLiteralPat : RawImp -> Bool
+hasLiteralPat (IPrimVal _ _) = True
+hasLiteralPat (IApp _ f a) = hasLiteralPat f || hasLiteralPat a
+hasLiteralPat (IAutoApp _ f a) = hasLiteralPat f || hasLiteralPat a
+hasLiteralPat (INamedApp _ f _ a) = hasLiteralPat f || hasLiteralPat a
+hasLiteralPat _ = False
+
+-- Check if any clause has literal patterns in its LHS.
+-- Functions with literal patterns (e.g. `fib 0 = 0`) need concrete types
+-- for pattern matching, so their type metas should not be protected from
+-- defaulting during synthesised-type elaboration.
+clausesHaveLiteralPats : List ImpClause -> Bool
+clausesHaveLiteralPats [] = False
+clausesHaveLiteralPats (PatClause _ lhs _ :: cs)
+    = hasLiteralPat lhs || clausesHaveLiteralPats cs
+clausesHaveLiteralPats (WithClause _ lhs _ _ _ _ _ :: cs)
+    = hasLiteralPat lhs || clausesHaveLiteralPats cs
+clausesHaveLiteralPats (ImpossibleClause _ lhs :: cs)
+    = hasLiteralPat lhs || clausesHaveLiteralPats cs
 
 export
 processDef : {vars : _} ->
@@ -1339,9 +1531,45 @@ processDef opts nest env fc n_in cs_in
          -- and use this requirement when processing `with` blocks
          log "declare.def" 5 $ "Traversing clauses of " ++ show n ++ " with mult " ++ show mult
          let treq = fromMaybe !getDefaultTotalityOption (findSetTotal (flags gdef))
+         -- When elaborating synthesised-type definitions, suppress default
+         -- hint resolution so typeclass constraints remain unsolved for
+         -- later generalisation (e.g. Num a => a -> a -> a)
+         let isSynth = SynthesisedType `elem` flags gdef
+         when isSynth $ update UST { synthElabMode := True }
          cs <- withTotality treq $
                traverse (checkClause mult (collapseDefault $ visibility gdef) treq
                                      hashit nidx opts nest env) cs_in
+         when isSynth $ do
+           -- Phase 2: retry constraints not related to type generalisation.
+           -- Compute the function type's unsolved metas, then retry with
+           -- synthTypeMetas set so retryGuess only suppresses constraints
+           -- whose types reference these specific metas.
+           defs' <- get Ctxt
+           Just gdef' <- lookupCtxtExact (Resolved nidx) (gamma defs')
+             | Nothing => update UST { synthElabMode := False }
+           nty' <- normalise defs' [] (type gdef')
+           let (_, metaInts) = collectMetaInts empty nty'
+           unsolvedMetas <- filterM
+             (\i => do defs'' <- get Ctxt
+                       Just mgdef <- lookupCtxtExact (Resolved i) (gamma defs'')
+                         | Nothing => pure False
+                       case definition mgdef of
+                         Hole _ _ => pure True
+                         _ => pure False) metaInts
+           -- Phase 2: turn off synthElabMode and retry constraint solving.
+           -- If clauses have literal patterns (e.g. `fib 0 = 0`), don't
+           -- protect type metas — they must resolve to concrete types for
+           -- pattern matching. Otherwise, protect type metas with noSolve
+           -- so they remain unsolved for generalisation.
+           let hasLitPats = clausesHaveLiteralPats cs_in
+           let protectedMetas : List Int
+                 = if hasLitPats then [] else unsolvedMetas
+           update UST { synthElabMode := False }
+           traverse_ addNoSolve protectedMetas
+           solveConstraints inTerm Normal
+           solveConstraints inTerm Defaults
+           solveConstraints inTerm LastChance
+           traverse_ removeNoSolve protectedMetas
 
          let pats = map toPats (rights cs)
 

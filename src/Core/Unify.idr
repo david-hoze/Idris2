@@ -1492,31 +1492,35 @@ retryGuess mode smode (hid, (loc, hname))
            Just def =>
              case definition def of
                BySearch rig depth defining =>
-                  handleUnify
-                     (do tm <- search loc rig (smode == Defaults) depth defining
-                                      (type def) Env.empty
-                         let gdef = { definition := PMDef defaultPI Scope.empty (STerm 0 tm) (STerm 0 tm) [] } def
-                         logTermNF "unify.retry" 5 ("Solved " ++ show hname) Env.empty tm
-                         ignore $ addDef (Resolved hid) gdef
-                         removeGuess hid
-                         pure True)
-                     $ \case
-                       DeterminingArg _ n i _ _ =>
-                         do logTerm "unify.retry" 5
-                                    ("Failed (det " ++ show hname ++ " " ++ show n ++ ")")
-                                    (type def)
-                            setInvertible loc (Resolved i)
-                            pure False -- progress not made yet!
-                       err =>
-                         do logTermNF "unify.retry" 5
-                                      ("Search failed at " ++ show rig ++ " for " ++ show hname)
-                                      Env.empty (type def)
-                            case smode of
-                                 LastChance => throw err
-                                 _ => if recoverable err
-                                         then pure False -- Postpone again
-                                         else throw (CantSolveGoal loc (gamma defs)
-                                                        Env.empty (type def) (Just err))
+                  do ust <- get UST
+                     if (synthElabMode ust && (smode == Defaults || smode == LastChance))
+                        then pure False -- Phase 1: preserve all for generalisation
+                        else
+                          handleUnify
+                            (do tm <- search loc rig (smode == Defaults) depth defining
+                                             (type def) Env.empty
+                                let gdef = { definition := PMDef defaultPI Scope.empty (STerm 0 tm) (STerm 0 tm) [] } def
+                                logTermNF "unify.retry" 5 ("Solved " ++ show hname) Env.empty tm
+                                ignore $ addDef (Resolved hid) gdef
+                                removeGuess hid
+                                pure True)
+                            $ \case
+                              DeterminingArg _ n i _ _ =>
+                                do logTerm "unify.retry" 5
+                                           ("Failed (det " ++ show hname ++ " " ++ show n ++ ")")
+                                           (type def)
+                                   setInvertible loc (Resolved i)
+                                   pure False -- progress not made yet!
+                              err =>
+                                do logTermNF "unify.retry" 5
+                                             ("Search failed at " ++ show rig ++ " for " ++ show hname)
+                                             Env.empty (type def)
+                                   case smode of
+                                        LastChance => throw err
+                                        _ => if recoverable err
+                                                then pure False -- Postpone again
+                                                else throw (CantSolveGoal loc (gamma defs)
+                                                               Env.empty (type def) (Just err))
                Guess tm envb [constr] =>
                  do let umode = case smode of
                                      MatchArgs => inMatch
