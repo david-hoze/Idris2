@@ -3,6 +3,7 @@ module Idris.Error
 import Core.Env
 
 import Idris.Doc.String
+import Idris.Progressive.ErrorLevel
 import Idris.REPL.Opts
 import Idris.Resugar
 import Idris.Syntax
@@ -306,13 +307,20 @@ perrorRaw : {auto c : Ref Ctxt Defs} ->
             Error -> Core (Doc IdrisAnn)
 perrorRaw (Fatal err) = perrorRaw err
 perrorRaw (CantConvert fc gam env l r)
-    = do defs <- get Ctxt
+    = do beginner <- useBeginnerMessages
+         defs <- get Ctxt
          setCtxt gam
-         let res = errorDesc (hsep [ reflow "Mismatch between" <+> colon
-                  , code !(pshow env l)
-                  , "and"
-                  , code !(pshow env r) <+> dot
-                  ]) <+> line <+> !(ploc fc)
+         dl <- pshow env l
+         dr <- pshow env r
+         loc <- ploc fc
+         let res = if beginner
+               then errorDesc (hsep [ reflow "These types don't match" <+> colon
+                    , code dl, "and", code dr <+> dot
+                    ]) <+> line <+> loc
+                    <+> line <+> reflow "Suggestion: add a type annotation to clarify your intent."
+               else errorDesc (hsep [ reflow "Mismatch between" <+> colon
+                    , code dl, "and", code dr <+> dot
+                    ]) <+> line <+> loc
          put Ctxt defs
          pure res
 perrorRaw (CantSolveEq fc gam env l r)
@@ -362,7 +370,12 @@ perrorRaw (ValidCase fc env (Left tm))
 perrorRaw (ValidCase _ env (Right err))
     = pure $ errorDesc (reflow "Impossible pattern gives an error" <+> colon) <+> line <+> !(perrorRaw err)
 perrorRaw (UndefinedName fc x)
-    = pure $ errorDesc (reflow "Undefined name" <++> code (pretty0 x) <+> dot) <++> line <+> !(ploc fc)
+    = do beginner <- useBeginnerMessages
+         if beginner
+           then pure $ errorDesc (reflow "I don't recognize the name" <++> code (pretty0 x) <+> dot)
+                    <++> line <+> !(ploc fc)
+           else pure $ errorDesc (reflow "Undefined name" <++> code (pretty0 x) <+> dot)
+                    <++> line <+> !(ploc fc)
 perrorRaw (InvisibleName fc n (Just ns))
     = pure $ errorDesc ("Name" <++> code (pretty0 n) <++> reflow "is inaccessible since"
         <++> code (pretty0 ns) <++> reflow "is not explicitly imported.")
@@ -492,12 +505,23 @@ perrorRaw (IncompatibleFieldUpdate fc flds)
     = pure $ reflow "Field update" <++> reAnnotate Syntax (prettyFieldPath flds)
              <++> reflow "not compatible with other updates at" <+> colon <+> line <+> !(ploc fc)
 perrorRaw (InvalidArgs fc env [n] tm)
-    = pure $ errorDesc (code (pretty0 n) <++> reflow "is not a valid argument in" <++> !(pshow env tm)
-        <+> dot) <+> line <+> !(ploc fc)
+    = do beginner <- useBeginnerMessages
+         if beginner
+           then pure $ errorDesc (code (pretty0 n) <++> reflow "is not expected here in"
+                    <++> !(pshow env tm) <+> dot)
+                    <+> line <+> !(ploc fc)
+           else pure $ errorDesc (code (pretty0 n) <++> reflow "is not a valid argument in"
+                    <++> !(pshow env tm) <+> dot)
+                    <+> line <+> !(ploc fc)
 perrorRaw (InvalidArgs fc env ns tm)
-    = pure $ errorDesc (concatWith (surround (comma <+> space)) (code . pretty0 <$> ns)
-        <++> reflow "are not valid arguments in" <++> !(pshow env tm) <+> dot)
-        <+> line <+> !(ploc fc)
+    = do beginner <- useBeginnerMessages
+         if beginner
+           then pure $ errorDesc (concatWith (surround (comma <+> space)) (code . pretty0 <$> ns)
+                    <++> reflow "are not expected here in" <++> !(pshow env tm) <+> dot)
+                    <+> line <+> !(ploc fc)
+           else pure $ errorDesc (concatWith (surround (comma <+> space)) (code . pretty0 <$> ns)
+                    <++> reflow "are not valid arguments in" <++> !(pshow env tm) <+> dot)
+                    <+> line <+> !(ploc fc)
 perrorRaw (TryWithImplicits fc env imps)
     = pure $ errorDesc (reflow "Need to bind implicits"
         <++> concatWith (surround (comma <+> space)) !(traverse (tshow env) imps) <+> dot)
@@ -511,11 +535,19 @@ perrorRaw (BadUnboundImplicit fc env n ty)
         <++> reflow "with type" <++> code !(pshow env ty)
         <+> colon) <+> line <+> !(ploc fc) <+> line <+> reflow "Suggestion: try an explicit bind."
 perrorRaw (CantSolveGoal fc gam env g reason)
-    = do defs <- get Ctxt
+    = do beginner <- useBeginnerMessages
+         defs <- get Ctxt
          setCtxt gam
          let (_ ** (env', g')) = dropEnv env g
-         let res = errorDesc (reflow "Can't find an implementation for" <++> code !(pshow env' g')
-                     <+> dot) <+> line <+> !(ploc fc)
+         dg <- pshow env' g'
+         loc <- ploc fc
+         let res : Doc IdrisAnn
+             res = if beginner
+               then errorDesc (reflow "This operation doesn't work with the types in your code."
+                     <++> reflow "Missing capability" <+> colon <++> code dg
+                     <+> dot) <+> line <+> loc
+               else errorDesc (reflow "Can't find an implementation for" <++> code dg
+                     <+> dot) <+> line <+> loc
          put Ctxt defs
          case reason of
               Nothing => pure res
@@ -537,7 +569,13 @@ perrorRaw (DeterminingArg fc n i env g)
         <+> reflow "since I can't infer a value for argument" <++> code (pretty0 n) <+> dot)
         <+> line <+> !(ploc fc)
 perrorRaw (UnsolvedHoles hs)
-    = pure $ errorDesc (reflow "Unsolved holes" <+> colon) <+> line <+> !(prettyHoles hs)
+    = do beginner <- useBeginnerMessages
+         if beginner
+           then pure $ errorDesc (reflow "Your program has unfinished parts marked with '?'."
+                    <++> reflow "Fill them in or remove them before running" <+> colon)
+                    <+> line <+> !(prettyHoles hs)
+           else pure $ errorDesc (reflow "Unsolved holes" <+> colon)
+                    <+> line <+> !(prettyHoles hs)
   where
     prettyHoles : List (FC, Name) -> Core (Doc IdrisAnn)
     prettyHoles [] = pure emptyDoc
@@ -781,12 +819,21 @@ perrorRaw (InRHS fc n err)
                   , !(perrorRaw err)
                   ]
 
-perrorRaw (MaybeMisspelling err ns) = pure $ !(perrorRaw err) <+> case ns of
-  (n ::: []) => reflow "Did you mean:" <++> code (pretty0 n) <+> "?"
-  _ => let (xs, x) = unsnoc ns in
-       reflow "Did you mean any of:"
-       <++> concatWith (surround (comma <+> space)) (map (code . pretty0) xs)
-       <+> comma <++> "or" <++> code (pretty0 x) <+> "?"
+perrorRaw (MaybeMisspelling err ns) = do
+  beginner <- useBeginnerMessages
+  errDoc <- perrorRaw err
+  pure $ errDoc <+> case ns of
+    (n ::: []) => if beginner
+         then reflow "Did you mean" <++> code (pretty0 n) <+> "?"
+         else reflow "Did you mean:" <++> code (pretty0 n) <+> "?"
+    _ => let (xs, x) = unsnoc ns in
+         if beginner
+           then reflow "Did you mean one of:"
+             <++> concatWith (surround (comma <+> space)) (map (code . pretty0) xs)
+             <+> comma <++> "or" <++> code (pretty0 x) <+> "?"
+           else reflow "Did you mean any of:"
+             <++> concatWith (surround (comma <+> space)) (map (code . pretty0) xs)
+             <+> comma <++> "or" <++> code (pretty0 x) <+> "?"
 perrorRaw (WarningAsError warn) = pwarningRaw warn
 
 export
