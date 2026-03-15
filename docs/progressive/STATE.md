@@ -1,8 +1,8 @@
 # Progressive Idris — Implementation State
 
-## Test Results: 61/62 passing
+## Test Results: 75/75 passing
 
-### Block 1: Type Synthesis (15/16)
+### Block 1: Type Synthesis (16/16)
 
 | Test      | Status | Description                        | Notes                                      |
 |-----------|--------|------------------------------------|---------------------------------------------|
@@ -14,7 +14,7 @@
 | pat001    | PASS   | `myNot True = False; ...`          | Bool pattern matching                       |
 | pat002    | PASS   | `myAnd True True = True; ...`      | Two-arg Bool patterns                       |
 | pat003    | PASS   | `fromMaybe def Nothing = def; ...` | constSolvable flag solves return type hole  |
-| pat004    | FAIL   | `myFst (x, _) = x`                | Elaboration ordering — see Known Limitations|
+| pat004    | PASS   | `myFst (x, _) = x`                | Fixed via constSolvable orientation         |
 | pat005    | PASS   | `myLength [] = 0; ...`             | Integer defaulting for numeric literals     |
 | case001   | PASS   | `test x = case not x of ...`      | Case expression with Prelude-typed scrutinee|
 | let001    | PASS   | `addDouble x y = let s = ...`     | Let binding                                 |
@@ -71,6 +71,40 @@ annotated), and v2 (fully annotated).
 | err003   | PASS   | `Integer/String` mismatch (++)     |
 | err004   | PASS   | `Bool/Integer` mismatch (patterns) |
 | err005   | PASS   | `Integer/String` at call site      |
+
+### Block 5: Level-Adapted Error Messages (2/2)
+
+| Test       | Status | Description                        |
+|------------|--------|------------------------------------|
+| errmsg001  | PASS   | CantSolveGoal beginner message     |
+| errmsg002  | PASS   | UndefinedName beginner message     |
+
+Beginner-friendly messages activate only for Level 0-1 files (no polymorphic
+annotations) that have SynthesisedType definitions with PMDef bodies. Adapted
+errors: CantConvert, CantSolveGoal, UndefinedName, UnsolvedHoles, InvalidArgs,
+MaybeMisspelling.
+
+### Block 4 (v2): Stress Tests (6/6)
+
+| Test        | Status | Description                             | Compile Time |
+|-------------|--------|-----------------------------------------|--------------|
+| stress001   | PASS   | 20 unannotated functions                | ~3.5s        |
+| stress002   | PASS   | 20 mixed-annotation functions           | ~2.8s        |
+| stress003   | PASS   | 10-level nested let bindings            | ~1.7s        |
+| stress004   | PASS   | 20 unannotated (monotonicity v0)        | ~3s          |
+| stress004v1 | PASS   | 20 half-annotated (monotonicity v1)     | ~3s          |
+| stress004v2 | PASS   | 20 fully-annotated (monotonicity v2)    | ~3s          |
+
+All 4 typed hole tests:
+
+### Block 4 (v1): Typed Holes (4/4)
+
+| Test     | Status | Description                        |
+|----------|--------|------------------------------------|
+| hole001  | PASS   | Typed hole in unannotated function |
+| hole002  | PASS   | Hole preserves inferred context    |
+| hole003  | PASS   | Hole in where clause               |
+| hole004  | PASS   | Hole in let binding                |
 
 ### Tutorial (4 stages, identical output)
 
@@ -137,16 +171,14 @@ Key helpers: `collectCaseBlocks`, `addCBCallArgs`/`addCBCallArgsTree`,
 - `src/Idris/CommandLine.idr` — `--show-inferred-types` flag
 - `src/Idris/Session.idr` / `Options.idr` — `showInferredTypes` session option
 - `src/Idris/ProcessIdr.idr` — `showSynthesisedTypes`
+- `src/Idris/Progressive/ErrorLevel.idr` — annotation level detection, progressive mode detection
+- `src/Idris/Error.idr` — beginner-friendly error messages for progressive modules
 
 ## Known Limitations
 
-### pat004: Pair matching — Elaboration ordering
+### pat004: Pair matching — SOLVED
 
-`myFst (x, _) = x` fails because `unifyBothApps` picks the wrong hole
-orientation when both sides have unsolved metas. The `IAlternative` handling
-correctly recognizes pair syntax, but the constraint `?a ~ ?ret[MkPair ...]`
-is resolved in the wrong direction. Fix: teach `unifyBothApps` to prefer
-`constSolvable` holes.
+Fixed via `constSolvable` orientation in `unifyBothApps`.
 
 ### Ord constraint inference — SOLVED
 
