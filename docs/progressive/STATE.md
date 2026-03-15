@@ -176,23 +176,17 @@ Key helpers: `collectCaseBlocks`, `addCBCallArgs`/`addCBCallArgsTree`,
 
 ## Known Limitations
 
-### pat004: Pair matching — SOLVED
+See `docs/progressive/KNOWN_LIMITATIONS.md` for full details.
 
-Fixed via `constSolvable` orientation in `unifyBothApps`.
+1. **Mutual recursion** — requires type annotations (forward declarations)
+2. **Higher-order functions (3+ args)** — `apply f x = f x` needs annotation
+3. **Dependent patterns (ambiguous ctors)** — `::` needs disambiguation
+4. **Where-clause patterns (unannotated parent)** — parent needs annotation
 
-### Ord constraint inference — SOLVED
+### Previously solved
 
-Nested `if-then-else` desugars to case block functions that don't capture
-global BySearch constraint metas. Fixed by propagating generalization to case
-blocks: after generalizing the parent function, all reachable case blocks get
-the same implicit type/constraint binders, and call sites are updated.
-Duplicate constraints (e.g., two `Ord ?a` from `<` and `>`) are deduplicated.
-
-### Higher-order functions
-
-`apply f x = f x` and `compose f g x = f (g x)` require Hindley-Milner
-inference to determine that `f` is a function type. This is fundamentally
-different from constructor-driven synthesis.
+- **pat004 pair matching** — fixed via `constSolvable` orientation
+- **Ord constraint inference** — fixed via case block generalization propagation
 
 ### Technical debt
 
