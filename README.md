@@ -65,6 +65,25 @@ Finally, `pack` also makes it easy to download, and keep updated version of, [id
 - [mattpolzin/idris-docker](https://github.com/mattpolzin/idris-docker)
 - [dgellow/idris-docker-image](https://github.com/dgellow/idris-docker-image)
 
+## Progressive Idris (experimental, `progressive-stage1` branch)
+
+This branch includes **Progressive Idris**, an extension that lets you write
+Idris 2 code without type annotations. The compiler infers types, generalizes
+them with typeclass constraints and polymorphism, and provides beginner-friendly
+error messages.
+
+```idris
+add x y = x + y                -- inferred: Num a => a -> a -> a
+myNot True = False
+myNot False = True              -- inferred: Bool -> Bool
+factorial 0 = 1
+factorial n = n * factorial (n - 1)  -- inferred: Integer -> Integer
+```
+
+Adding annotations never changes runtime behavior (monotonicity guarantee).
+See [`docs/progressive/GUIDE.md`](docs/progressive/GUIDE.md) for the full
+user guide and [`CHANGES.md`](CHANGES.md) for the implementation changelog.
+
 ## Things still missing
 
 + Cumulativity (currently `Type : Type`. Bear that in mind when you think
