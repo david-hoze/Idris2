@@ -74,6 +74,10 @@ hasProgressiveDefinitions = do
   names <- allNames (gamma defs)
   anyInNS defs ns names
   where
+    isDefinedDef : Def -> Bool
+    isDefinedDef (PMDef {}) = True
+    isDefinedDef _ = False
+
     anyInNS : Defs -> Namespace -> List Name -> Core Bool
     anyInNS defs ns [] = pure False
     anyInNS defs ns (n :: rest) =
@@ -81,6 +85,7 @@ hasProgressiveDefinitions = do
         then do Just gdef <- lookupCtxtExact n (gamma defs)
                   | Nothing => anyInNS defs ns rest
                 if elem SynthesisedType (flags gdef)
+                     && isDefinedDef (definition gdef)
                   then pure True
                   else anyInNS defs ns rest
         else anyInNS defs ns rest
