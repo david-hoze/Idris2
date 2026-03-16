@@ -1915,6 +1915,119 @@ generaliseType fc n nidx
             newLhs = apply fc fn (erasedArgs ++ args)
         in (implNames ++ vs ** (wenv, newLhs, wrhs))
 
+-- Tighten multiplicities of explicit arguments in a synthesised type
+-- by trial: temporarily set each argument to linear (Rig1), run the
+-- linearity checker, and keep Rig1 only if the check passes.
+-- This correctly handles cases where a variable appears once but in
+-- an unrestricted position (e.g. list constructor).
+tightenMultiplicities : {auto c : Ref Ctxt Defs} ->
+                        {auto u : Ref UST UState} ->
+                        FC -> Name -> Int -> Core ()
+tightenMultiplicities fc n nidx
+  = do defs <- get Ctxt
+       Just gdef <- lookupCtxtExact (Resolved nidx) (gamma defs)
+         | Nothing => pure ()
+       when (SynthesisedType `elem` flags gdef) $ do
+         let PMDef pi cargs treeCT treeRT pats = definition gdef
+           | _ => pure ()
+         -- Count explicit Pi binders in the type
+         let nExplicit = countExplicitPis (type gdef)
+         when (nExplicit > 0) $ do
+           -- For each explicit arg, test if linear is valid
+           mults <- testArgs 0 nExplicit pats (type gdef)
+           when (any isLinear mults) $ do
+             let newTy = setExplicitMults mults (type gdef)
+             ignore $ addDef (Resolved nidx) $ { type := newTy } gdef
+             (es, dtes) <- findErased newTy
+             defs' <- get Ctxt
+             Just gdef' <- lookupCtxtExact (Resolved nidx) (gamma defs')
+               | Nothing => pure ()
+             ignore $ addDef (Resolved nidx) $
+               { eraseArgs := es, safeErase := dtes } gdef'
+             log "declare.def" 5 $
+               "Tightened multiplicities for " ++ show n
+  where
+    countExplicitPis : Term vars -> Nat
+    countExplicitPis (Bind _ _ (Pi _ _ Explicit _) sc) = S (countExplicitPis sc)
+    countExplicitPis (Bind _ _ (Pi _ _ _ _) sc) = countExplicitPis sc
+    countExplicitPis _ = 0
+
+    -- Set the multiplicity of the Nth binder (counting from the head/outermost)
+    setEnvMult : {vars : _} -> Nat -> RigCount ->
+                 Env Term vars -> Env Term vars
+    setEnvMult Z m (b :: env) = setMultiplicity b m :: env
+    setEnvMult (S k) m (b :: env) = b :: setEnvMult k m env
+    setEnvMult _ _ env = env
+
+    -- Find the env position of the Nth explicit argument.
+    -- Skips implicit/auto Pi binders (from generalization) that appear
+    -- as Let/Pi binders in the clause env.
+    findExplicitPos : {vars : _} -> Nat -> Env Term vars -> Maybe Nat
+    findExplicitPos target env = go 0 target env
+      where
+        isExplicitPat : Binder t -> Bool
+        isExplicitPat (PVar _ _ Explicit _) = True
+        isExplicitPat (PVTy _ _ _) = True
+        isExplicitPat _ = False
+
+        go : {vs : _} -> Nat -> Nat -> Env Term vs -> Maybe Nat
+        go pos Z (b :: _) = if isExplicitPat b then Just pos else Nothing
+        go pos (S k) (b :: rest)
+            = if isExplicitPat b
+                 then go (S pos) k rest
+                 else go (S pos) (S k) rest
+        go _ _ [] = Nothing
+
+    -- Try linearCheck on all clause RHSes with a modified env.
+    -- Returns True if ALL clauses pass with the modified multiplicity.
+    -- We normalise the RHS first to substitute solved metas, because
+    -- linearCheck's updateHoleUsage forgives zero-usage linear vars
+    -- when ANY unsolved hole exists in the term.
+    trialLinear : Nat ->
+                  List (vs ** (Env Term vs, Term vs, Term vs)) ->
+                  Core Bool
+    trialLinear envPos [] = pure True
+    trialLinear envPos ((vs ** (env, lhs, rhs)) :: rest)
+        = do let env' = setEnvMult envPos linear env
+             defs <- get Ctxt
+             -- Normalise to substitute solved metas; linearCheck's
+             -- updateHoleUsage forgives zero-usage linear vars when
+             -- any unsolved hole exists in the term.
+             rhs' <- catch
+               (normalise defs env' rhs)
+               (\_ => pure rhs)
+             ok <- catch
+               (do ignore $ linearCheck fc linear False env' rhs'
+                   pure True)
+               (\_ => pure False)
+             if ok then trialLinear envPos rest
+                   else pure False
+
+    -- Test each explicit argument: can it be linear?
+    testArgs : Nat -> Nat ->
+               List (vs ** (Env Term vs, Term vs, Term vs)) ->
+               Term vs' -> Core (List RigCount)
+    testArgs i nTotal pats ty
+        = if i >= nTotal then pure []
+          else do -- Find env position for this explicit arg in the first clause
+                  canBeLinear <- case pats of
+                    ((vs ** (env, _, _)) :: _) =>
+                      case findExplicitPos i env of
+                        Just pos => trialLinear pos pats
+                        Nothing => pure False
+                    _ => pure False
+                  let m = if canBeLinear then linear else top
+                  rest <- testArgs (S i) nTotal pats ty
+                  pure (m :: rest)
+
+    -- Update multiplicities of explicit Pi binders in a type.
+    setExplicitMults : List RigCount -> Term vars -> Term vars
+    setExplicitMults (m :: ms) (Bind bfc x (Pi pfc _ Explicit ty) sc)
+        = Bind bfc x (Pi pfc m Explicit ty) (setExplicitMults ms sc)
+    setExplicitMults ms (Bind bfc x b@(Pi _ _ _ _) sc)
+        = Bind bfc x b (setExplicitMults ms sc)
+    setExplicitMults _ ty = ty
+
 -- Check if a RawImp term contains any literal values (IPrimVal).
 -- Used to detect numeric/string literal patterns in clause LHS.
 hasLiteralPat : RawImp -> Bool
@@ -2069,6 +2182,7 @@ processDef opts nest env fc n_in cs_in
          -- Must run AFTER compileRunTime so that mkRunTime's scopeEq
          -- check sees the original (ungeneralised) PMDef args.
          generaliseType fc n nidx
+         tightenMultiplicities fc n nidx
   where
     -- Move `withTotality` to Core.Context if we need it elsewhere
     ||| Temporarily rebind the default totality requirement (%default total/partial/covering).

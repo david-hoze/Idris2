@@ -61,6 +61,14 @@ maximum number of explicit arguments each variable is applied to.
   codomain issues for arity > 1, and the IBindVar path can't unify
   across different HOF args. Would need shared type variables.
 
+## ~~Stage 3, Task 1: Multiplicity Inference~~ (DONE)
+
+`tightenMultiplicities` infers QTT multiplicities from usage patterns. For each
+explicit argument of a synthesised-type definition, it trial-sets the argument
+to linear and runs `linearCheck` on normalised clause RHSes. Variables used only
+once in linear-compatible positions get Rig1; variables used multiple times or in
+unrestricted positions (e.g., inside List `(::)`) stay RigW. See ARCHITECTURE.md.
+
 ## Stage 3: IDE Integration
 
 ### LSP Inferred Type Hover
@@ -108,7 +116,8 @@ These uses are incompatible.
 Implemented via auto-generated forward declarations in `processDecl` for
 `PMutual` blocks. See ARCHITECTURE.md for details.
 
-### Where-Clause Patterns Without Parent Annotation
+### ~~Where-Clause Patterns Without Parent Annotation~~ (DONE — Stage 2)
 
-Currently fails when both parent and where-helper use constructor patterns.
-Needs better type propagation between parent and local definitions.
+Resolved via forward-meta solving, same-meta constant solving, and an
+invertible bypass in `unifyBothApps`. See ARCHITECTURE.md for details.
+Complex Nat+Prelude combos still require annotation.

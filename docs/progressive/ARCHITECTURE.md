@@ -115,6 +115,33 @@ meta application, causing `patternEnv` to fail. Three mechanisms handle this:
    ensures constSolvable metas fall through to the solving-order logic which
    routes to `tryConstantSolve`/`trySameMetaConst`.
 
+## Multiplicity Inference (Stage 3)
+
+`tightenMultiplicities` (in `ProcessDef.idr`) runs after `generaliseType` for
+synthesised-type definitions. It infers QTT multiplicities from usage patterns:
+
+**Algorithm**: For each explicit argument, trial-set it to linear (Rig1) and
+run `linearCheck` on every clause RHS. If linearCheck passes, keep Rig1;
+otherwise revert to RigW (unrestricted).
+
+**Key subtlety**: The RHS is normalised before `linearCheck` to substitute
+solved metas. Without normalisation, `linearCheck`'s `updateHoleUsage` mechanism
+forgives zero-usage linear variables whenever ANY unsolved `Hole` meta exists
+in the term — a false positive for synthesised-type definitions that may still
+have meta references in their compiled clauses.
+
+**What it catches**:
+- `useOnce x = consume x` (where `consume : (1 _ : String) -> String`)
+  → `x` passes linearCheck with Rig1 → inferred as `(1 _ : String) -> String`
+- `duplicate x = (x, x)` → `x` used twice → linearCheck fails → stays RigW
+- `cat x y = unwords [x, show y]` → `x` used once but in unrestricted position
+  (List `(::)` has RigW for elements) → linearCheck correctly fails → stays RigW
+
+**Helpers**: `findExplicitPos` maps the Nth explicit Pi argument to the
+corresponding env position in the compiled clause (skipping implicit/auto
+binders). `setEnvMult` modifies a binder's multiplicity in the env.
+`setExplicitMults` patches the Pi binders in the type term.
+
 ## Typeclass Constraint Inference (3-phase)
 
 **Phase 1** (during elaboration): `synthElabMode` flag in UState suppresses
@@ -186,7 +213,7 @@ to paste into source code.
 - `src/Core/Context/TTC.idr` — TTC tag 14 for `SynthesisedType`
 - `src/Core/Unify.idr` — `tryConstantSolve`, Phase 1 suppression in `retryGuess`
 - `src/Core/UnifyState.idr` — `synthElabMode`, `synthTypeMetas`, `containsMetaFrom`, `hasMeta`
-- `src/TTImp/ProcessDef.idr` — `synthTypeFromPatterns`, `generaliseType`, Phase 2 logic, `clausesHaveLiteralPats`, `replaceMetasW`
+- `src/TTImp/ProcessDef.idr` — `synthTypeFromPatterns`, `generaliseType`, Phase 2 logic, `clausesHaveLiteralPats`, `replaceMetasW`, `tightenMultiplicities`
 
 ### User interface
 - `src/Idris/CommandLine.idr` — `--show-inferred-types` flag

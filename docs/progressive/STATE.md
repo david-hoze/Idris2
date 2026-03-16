@@ -1,6 +1,6 @@
 # Progressive Idris — Stage 1
 
-**Status**: Complete. 87/87 progressive tests passing, zero upstream regressions.
+**Status**: Complete. 96/96 progressive tests passing, zero upstream regressions.
 
 Progressive Idris lets you write Idris 2 code without type annotations and
 add them gradually. The compiler infers types for unannotated functions,
@@ -12,7 +12,7 @@ beginner-friendly error messages.
 | Document                   | Contents                                       |
 |----------------------------|-------------------------------------------------|
 | [GUIDE.md](GUIDE.md)      | User guide for the progressive workflow          |
-| [TESTS.md](TESTS.md)      | Full test results — 75/75 passing                |
+| [TESTS.md](TESTS.md)      | Full test results — 96/96 passing                |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Compiler pipeline, implementation details |
 | [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) | What still needs annotations    |
 | [FUTURE.md](FUTURE.md)    | Stage 2+ plans (HOF inference, IDE, etc.)        |
@@ -28,6 +28,9 @@ beginner-friendly error messages.
 - Typeclass constraint inference (`add x y = x + y` → `Num a => a -> a -> a`)
 - Type propagation from annotated callees to unannotated callers
 - Mutual recursion in `mutual` blocks without annotations
+- Where-clause pattern matching with unannotated parents
+- Ambiguous constructor resolution (pair, list patterns)
+- Multiplicity inference from usage (linear propagation from callees)
 - Typed holes in unannotated functions
 - REPL auto-display of inferred types + `:addtype` command
 
@@ -38,10 +41,10 @@ Verified by 30 monotonicity tests (10 groups × 3 versions each).
 
 ### Known limitations
 
-1. ~~Mutual recursion~~ — resolved (Stage 2, `mutual` blocks)
-2. Higher-order functions (3+ args) — `apply f x = f x` needs annotation
-3. Ambiguous constructors — `::` needs disambiguation when Vect imported
-4. Where-clause patterns with unannotated parent
+1. ~~Mutual recursion~~ — resolved (Stage 2)
+2. Higher-order functions — advanced patterns (foldr, filter) need annotation
+3. ~~Ambiguous constructors~~ — resolved (Stage 2)
+4. ~~Where-clause patterns~~ — mostly resolved (Stage 2); complex Nat+Prelude combos still need annotation
 
 ### Files modified
 
@@ -54,9 +57,9 @@ source files and their roles.
 # Build compiler
 bash scripts/rebuild.sh
 
-# Run progressive tests (87/87)
+# Run progressive tests (96/96)
 bash tests/progressive/run_tests.sh
 
-# Run full upstream test suite (705+, zero regressions)
+# Run full upstream test suite (795/795, zero regressions)
 bash scripts/run_full_tests.sh
 ```

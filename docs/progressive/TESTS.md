@@ -1,6 +1,6 @@
 # Progressive Idris — Test Results
 
-**87/87 progressive tests passing. 705+ upstream tests, zero regressions.**
+**96/96 progressive tests passing. 795/795 upstream tests, zero regressions.**
 
 ## Block 1: Type Synthesis (16/16)
 
@@ -135,7 +135,16 @@ MaybeMisspelling.
 | mutual001 | PASS   | `isEven`/`isOdd` mutual recursion  | Bool-returning mutual block, no annotations |
 | mutual002 | PASS   | `countDown`/`countUp` mutual recursion | String-returning mutual block, no annotations |
 
+## Stage 3: Multiplicity Inference (5/5)
+
+| Test      | Status | Description                        | Notes                                      |
+|-----------|--------|------------------------------------|---------------------------------------------|
+| mult001   | PASS   | `useOnce x = consume x`           | Linear inferred from callee's Rig1 argument |
+| mult002   | PASS   | `duplicate x = (x, x)`            | Unrestricted (used twice)                   |
+| mult003   | PASS   | `wrapLinear x = linearId x`       | Linear propagation from polymorphic callee  |
+| mult004   | PASS   | `cat x y = unwords [x, show y]`   | Unrestricted: used once but in RigW position|
+| mult005   | PASS   | `useOnce` in linear context        | Inferred linear, callable from linear ctx   |
+
 ## Full Idris 2 Test Suite
 
-Zero regressions on the Idris 2 test suite (705+ tests). The only failures
-are pre-existing: `chez014` and `channels009` (Windows-specific).
+Zero regressions on the Idris 2 test suite (795/795 tests).
