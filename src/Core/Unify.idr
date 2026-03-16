@@ -852,10 +852,18 @@ mutual
            tm <- quote empty env tmnf
            case shrink tm none of
                 Nothing =>
-                  -- Solution depends on local variables; fall back to default
-                  if invertible mdef
-                     then unifyHoleApp swap mode loc env mname mref margs margs' tmnf
-                     else postponePatVar swap mode loc env mname mref margs margs' tmnf
+                  -- Solution depends on local variables.
+                  -- Try forward-meta solve: if the solution is another
+                  -- constSolvable meta whose args are a prefix of ours,
+                  -- solve by forwarding scope variables.
+                  case tmnf of
+                    NApp _ (NMeta yn yi yargs) [] =>
+                      if not (isNil margs')
+                        then fallback
+                        else if yi == mref
+                          then trySameMetaConst defs empty yargs
+                          else tryForwardMeta defs empty yn yi yargs
+                    _ => fallback
                 Just closedTm =>
                   do -- Occurs check on the closed term
                      Just _ <- occursCheck loc env mode mname tm
@@ -876,11 +884,170 @@ mutual
                      removeHole mref
                      pure $ solvedHole mref
     where
+      fallback : Core UnifyResult
+      fallback =
+        if invertible mdef
+           then unifyHoleApp swap mode loc env mname mref margs margs' tmnf
+           else postponePatVar swap mode loc env mname mref margs margs' tmnf
+
       -- Wrap a closed term in lambdas to match the Pi binders of a type
       constFn : {vs : _} -> Term vs -> Term vs -> Term vs
       constFn (Bind bfc x (Pi _ c info _) sc) soln
           = Bind bfc x (Lam bfc c info (Erased bfc Placeholder)) (constFn sc (weaken soln))
       constFn _ soln = soln
+
+      -- Build a forwarding function: wraps in lambdas matching the type's
+      -- Pi binders, forwarding the first `numFwd` scope variables to the
+      -- inner meta and ignoring the rest.
+      -- E.g. for numFwd=2, type (x:A)->(y:B)->(z:C)->Type, builds:
+      --   \x => \y => \z => ?inner[x, y]
+      forwardMetaFn : {vs : _} -> FC -> Name -> Int ->
+                      Nat ->              -- remaining args to forward
+                      List (Term vs) ->   -- accumulated meta args (in order)
+                      Term vs -> Term vs
+      forwardMetaFn fc yn yi (S k) acc (Bind bfc x (Pi _ c info _) sc)
+          -- Still in forwarding range: capture the lambda-bound variable
+          = Bind bfc x (Lam bfc c info (Erased bfc Placeholder))
+                 (forwardMetaFn fc yn yi k
+                    (map weaken acc ++ [Local bfc Nothing 0 First]) sc)
+      forwardMetaFn fc yn yi 0 acc (Bind bfc x (Pi _ c info _) sc)
+          -- Past forwarding range: add lambda, weaken accumulated args
+          = Bind bfc x (Lam bfc c info (Erased bfc Placeholder))
+                 (forwardMetaFn fc yn yi 0 (map weaken acc) sc)
+      forwardMetaFn fc yn yi _ acc _
+          -- No more Pi binders: build the Meta application
+          = Meta fc yn yi acc
+
+      -- Check if two lists of closures evaluate to convertible NF values
+      argsConvertible : Defs -> Defs -> Env Term vars ->
+                        List (Closure vars) -> List (Closure vars) ->
+                        Core Bool
+      argsConvertible defs empty env [] [] = pure True
+      argsConvertible defs empty env (x :: xs) (y :: ys)
+          = do xnf <- evalArg empty x
+               ynf <- evalArg empty y
+               if !(convert defs env xnf ynf)
+                  then argsConvertible defs empty env xs ys
+                  else pure False
+      argsConvertible _ _ _ _ _ = pure False
+
+      -- Try to solve a meta by forwarding scope variables to another meta.
+      -- When ?A[a0..an] =?= ?B[b0..bm] with m<=n and a_i=b_i for i<m,
+      -- solve ?A = \x0..\xn => ?B[x0..xm]
+      tryForwardMeta : Defs -> Defs -> Name -> Int ->
+                       List (Closure vars) -> Core UnifyResult
+      tryForwardMeta defs empty yn yi yargs
+          = do let m = length yargs
+               let n = length margs
+               if m > n
+                  then fallback
+                  else do
+                    -- Check first m args are convertible
+                    matched <- argsConvertible defs empty env
+                                 (take m margs) yargs
+                    if not matched
+                       then fallback
+                       else do
+                         -- Build forwarding solution
+                         ty <- normalisePis defs Env.empty (type mdef)
+                         let rhs = forwardMetaFn EmptyFC yn yi m [] ty
+                         log "unify.hole" 5 $
+                           "Forward-meta solving " ++ show mname
+                             ++ " via " ++ show yn
+                         let num = length margs
+                         let simpleDef = MkPMDefInfo (SolvedHole num)
+                                                     (not (isUserName mname))
+                                                     False
+                         let newdef = { definition :=
+                                          PMDef simpleDef Scope.empty
+                                                (STerm 0 rhs) (STerm 0 rhs) []
+                                      } mdef
+                         ignore $ addDef (Resolved mref) newdef
+                         removeHole mref
+                         pure $ solvedHole mref
+
+      -- Check which positions in two arg lists are convertible.
+      -- Returns a list of booleans (True = matching, False = differing).
+      argsMatchList : Defs -> Defs -> Env Term vars ->
+                      List (NF vars) -> List (NF vars) ->
+                      Core (List Bool)
+      argsMatchList defs empty env [] [] = pure []
+      argsMatchList defs empty env (x :: xs) (y :: ys)
+          = do match <- convert defs env x y
+               rest <- argsMatchList defs empty env xs ys
+               pure (match :: rest)
+      argsMatchList _ _ _ _ _ = pure []
+
+      -- Drop Pi binders at False positions, keeping True positions.
+      -- For dropped positions, substitute Erased into the body.
+      dropDifferingPis : {vs : _} -> List Bool -> Term vs -> Term vs
+      dropDifferingPis (True :: rest) (Bind bfc x (Pi fc c info ty) sc)
+          = Bind bfc x (Pi fc c info ty) (dropDifferingPis rest sc)
+      dropDifferingPis (False :: rest) (Bind bfc x (Pi _ _ _ _) sc)
+          = dropDifferingPis rest (subst (Erased bfc Placeholder) sc)
+      dropDifferingPis _ tm = tm
+
+      -- Build a selective forwarding function: wraps in lambdas matching
+      -- the type's Pi binders, forwarding only the True-position scope
+      -- variables to the inner meta and ignoring False positions.
+      -- E.g. for mask [True,True,False], type (a:A)->(b:B)->(c:C)->Type:
+      --   \a => \b => \c => ?fresh[a, b]
+      selectiveForwardFn : {vs : _} -> FC -> Name -> Int ->
+                           List Bool ->        -- which positions to forward
+                           List (Term vs) ->   -- accumulated meta args
+                           Term vs -> Term vs
+      selectiveForwardFn fc yn yi (True :: rest) acc (Bind bfc x (Pi _ c info _) sc)
+          = Bind bfc x (Lam bfc c info (Erased bfc Placeholder))
+                 (selectiveForwardFn fc yn yi rest
+                    (map weaken acc ++ [Local bfc Nothing 0 First]) sc)
+      selectiveForwardFn fc yn yi (False :: rest) acc (Bind bfc x (Pi _ c info _) sc)
+          = Bind bfc x (Lam bfc c info (Erased bfc Placeholder))
+                 (selectiveForwardFn fc yn yi rest (map weaken acc) sc)
+      selectiveForwardFn fc yn yi _ acc _
+          = Meta fc yn yi acc
+
+      -- Handle same-meta case: ?M[a0..an] = ?M[b0..bn] where some args
+      -- differ. This means ?M is constant in the differing positions.
+      -- Solve by creating a fresh meta with only the matching-position
+      -- Pi binders and forwarding to it.
+      trySameMetaConst : Defs -> Defs -> List (Closure vars) ->
+                         Core UnifyResult
+      trySameMetaConst defs empty yargs
+          = do -- Evaluate all args on both sides
+               xnfs <- traverse (evalArg empty) margs
+               ynfs <- traverse (evalArg empty) yargs
+               matching <- argsMatchList defs empty env xnfs ynfs
+               if all id matching
+                  then pure success  -- all args match, trivially satisfied
+                  else if not (any id matching)
+                    then fallback  -- no matching args, can't help
+                    else do
+                      -- Some args differ: create fresh meta with reduced type
+                      ty <- normalisePis defs Env.empty (type mdef)
+                      let reducedTy = dropDifferingPis matching ty
+                      freshName <- genName "csfwd"
+                      let numMatching = length (filter id matching)
+                      (freshIdx, _) <- newMeta EmptyFC erased Env.empty
+                                          freshName reducedTy
+                                          (Hole numMatching (holeInit False))
+                                          False
+                      -- Build selective forwarding solution
+                      let rhs = selectiveForwardFn EmptyFC freshName freshIdx
+                                                   matching [] ty
+                      log "unify.hole" 5 $
+                        "Same-meta constant solving " ++ show mname
+                          ++ " via fresh " ++ show freshName
+                      let num = length margs
+                      let simpleDef = MkPMDefInfo (SolvedHole num)
+                                                  (not (isUserName mname))
+                                                  False
+                      let newdef = { definition :=
+                                       PMDef simpleDef Scope.empty
+                                             (STerm 0 rhs) (STerm 0 rhs) []
+                                   } mdef
+                      ignore $ addDef (Resolved mref) newdef
+                      removeHole mref
+                      pure $ solvedHole mref
 
   unifyHole : {auto c : Ref Ctxt Defs} ->
               {auto u : Ref UST UState} ->
@@ -1029,7 +1196,12 @@ mutual
   -- If they're both holes, solve the one with the bigger context
   unifyBothApps mode loc env xfc (NMeta xn xi xargs) xargs' yfc (NMeta yn yi yargs) yargs'
       = do invx <- isDefInvertible loc xi
-           if xi == yi && (invx || umode mode == InSearch)
+           -- When both sides are the same constSolvable meta, skip the
+           -- invertible shortcut: the meta may be constant in some arg
+           -- positions, so unifyArgs would wrongly fail on differing
+           -- constructor args (e.g. (x :: rest) vs rest).
+           xcs <- isConstSolvable xi
+           if xi == yi && (invx || umode mode == InSearch) && not xcs
                                -- Invertible, (from auto implicit search)
                                -- so we can also unify the arguments.
               then unifyArgs mode loc env (xargs ++ map snd xargs')
@@ -1046,10 +1218,14 @@ mutual
                       -- synthTypeFromPatterns), prefer to solve the one
                       -- with more meta-args: it has constructor args from
                       -- pattern matching that need tryConstantSolve.
-                      xcs <- isConstSolvable xi
+                      -- For the same meta (xi==yi), prefer the side with
+                      -- MORE constructor args (fewer locals) so patternEnv
+                      -- fails and trySameMetaConst can handle it.
                       ycs <- isConstSolvable yi
                       let solveX =
-                            if xcs && ycs && length xargs /= length yargs
+                            if xcs && ycs && xi == yi
+                               then xlocs <= ylocs
+                               else if xcs && ycs && length xargs /= length yargs
                                then length xargs >= length yargs
                                else xbigger
                       if (solveX || umode mode == InMatch) && not (pv xn)

@@ -65,38 +65,50 @@ myFilter f [] = []
 myFilter f (x :: xs) = if f x then x :: myFilter f xs else myFilter f xs
 ```
 
-## 3. Dependent Pattern Matching (without annotation)
+## 3. ~~Ambiguous Constructors~~ (RESOLVED)
 
-**Status**: Does not work — ambiguous constructors.
-
-When using constructors like `::` that exist in multiple types (List,
-Vect, Stream), Idris 2 cannot disambiguate without a type annotation.
+**Status**: Works without annotations when constructors are unambiguous in
+context (Stage 2).
 
 ```idris
--- FAILS: Ambiguous elaboration (::) could be List, Vect, or Stream
-import Data.Vect
-myHead (x :: _) = x
+-- Works: pair and list constructors resolve without annotation
+myFst (x, _) = x
+myHead (x :: _) = Just x
+myHead [] = Nothing
 ```
 
-**Workaround**: Provide the type annotation.
+Note: When constructors are genuinely ambiguous (e.g., `::` could be
+`List`, `Vect`, or `Stream` after importing `Data.Vect`), a type
+annotation is still needed — this is standard Idris 2 behaviour, not a
+progressive typing limitation.
+
+## 4. Where Clauses — Advanced Patterns (partially resolved)
+
+**Status**: Most where-clause patterns now work without annotations (Stage 2).
+Some complex patterns still require annotations.
+
+Simple and multi-helper where clauses work:
 
 ```idris
-myHead : Vect (S n) a -> a
-myHead (x :: _) = x
+-- Works: multi-clause pattern matching in where clause
+process xs = go xs 0
+  where
+    go [] acc = acc
+    go (x :: rest) acc = go rest (acc + x)
+
+-- Works: multiple helpers in same where block
+sumSq xs = helper xs 0
+  where
+    sq x = x * x
+    helper [] acc = acc
+    helper (x :: rest) acc = helper rest (acc + sq x)
 ```
 
-Note: This is not a limitation of progressive typing per se — even
-standard Idris 2 requires disambiguation for overloaded constructors.
-
-## 4. Where Clauses with Constructor Patterns (unannotated parent)
-
-**Status**: Does not work when the parent function is also unannotated.
-
-When both the parent and the where-clause helper use constructor patterns,
-type inference can fail due to insufficient type information propagation.
+**Still fails**: Where clauses that use `Nat` constructors like `Z`/`S`
+with `filter` and other higher-order Prelude functions:
 
 ```idris
--- FAILS: type mismatch (List Nat vs String)
+-- FAILS: complex interaction between where-clause types and Prelude generics
 process xs = let evens = filter isEven xs in length evens
   where
     isEven Z = True
@@ -139,3 +151,5 @@ The following features work **without** type annotations:
 | Function composition               | `compose f g x = f (g x)`                      |
 | Argument flipping                  | `myFlip f x y = f y x`                         |
 | Mutual recursion (in `mutual`)     | `mutual { isEven 0 = True; ... isOdd 0 = False; ... }` |
+| Where + constructor patterns       | `f xs = go xs 0 where go [] acc = acc; go (x::xs) acc = ...` |
+| Ambiguous constructors             | `myFst (x, _) = x`; `myHead (x :: _) = Just x`        |

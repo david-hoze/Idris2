@@ -91,6 +91,30 @@ constant constructors during unification. `tryConstantSolve` in `Unify.idr`
 resolves these holes when unified with concrete constructor types (like
 `Bool`, `Nat`, `List a`).
 
+### Where-Clause Type Meta Solving (Stage 2)
+
+Where-clause functions inherit the parent's env as their type meta scope.
+After pattern matching, constructor args replace Pi-bound variables in the
+meta application, causing `patternEnv` to fail. Three mechanisms handle this:
+
+1. **Forward-meta solve** (`tryForwardMeta`): When `?A[a0..an] =?= ?B[b0..bm]`
+   with `m <= n` and the first `m` args matching, solve `?A` as a forwarding
+   function: `\x0..\xn => ?B[x0..xm]`. Used when e.g. a 3-scope return type
+   meta forwards to a 2-scope accumulator type meta.
+
+2. **Same-meta constant solve** (`trySameMetaConst`): When
+   `?M[a0..an] =?= ?M[b0..bn]` with some args differing, create a fresh meta
+   with only the matching-position Pi binders and solve `?M` via selective
+   forwarding. E.g., if args 0 matches but arg 1 differs, solve
+   `?M = \x0 => \x1 => ?fresh[x0]`.
+
+3. **Invertible bypass in `unifyBothApps`**: When both sides of a same-meta
+   constraint are constSolvable, skip the `unifyArgs` path even if the meta is
+   marked invertible. Otherwise `unifyArgs` tries to match constructor args
+   positionally (e.g. `x :: rest` vs `rest`) and fails. The `not xcs` guard
+   ensures constSolvable metas fall through to the solving-order logic which
+   routes to `tryConstantSolve`/`trySameMetaConst`.
+
 ## Typeclass Constraint Inference (3-phase)
 
 **Phase 1** (during elaboration): `synthElabMode` flag in UState suppresses
