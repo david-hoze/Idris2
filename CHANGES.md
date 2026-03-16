@@ -72,6 +72,21 @@ It can only:
 - `KNOWN_LIMITATIONS.md`: Documents 4 limitations with workarounds.
 - `GUIDE.md`: User-facing guide for progressive workflow.
 
+#### Block 6: Progressive REPL (2 features)
+- **Auto-display of inferred types**: After `:let` definitions in the REPL,
+  unannotated functions automatically show their inferred type.
+  ```
+  Main> :let add x y = x + y
+  add : a -> a -> a
+  ```
+- **`:addtype` command**: Displays the type signature without module prefix,
+  ready to paste into source code.
+  ```
+  Main> :addtype add
+  add : a -> a -> a
+  ```
+- Modified files: `REPL.idr`, `Syntax.idr`, `Parser.idr`
+
 ### Test Results
 
 - **75 progressive tests**: All passing
