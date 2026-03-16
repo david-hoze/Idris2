@@ -779,7 +779,10 @@ execDecls : {auto c : Ref Ctxt Defs} ->
             {auto o : Ref ROpts REPLOpts} ->
             List PDecl -> Core REPLResult
 execDecls decls = do
+  defs <- get Ctxt
+  let startIdx = nextEntry (gamma defs)
   traverse_ execDecl decls
+  showNewSynthTypes startIdx
   pure DefDeclared
   where
     execDecl : PDecl -> Core ()
@@ -788,6 +791,27 @@ execDecls decls = do
       inidx <- resolveName (UN $ Basic "[defs]")
       _ <- newRef EST (initEStateSub inidx Env.empty Refl)
       processLocal [] (MkNested []) Env.empty !getItDecls i
+
+    hasSynthFlag : List DefFlag -> Bool
+    hasSynthFlag [] = False
+    hasSynthFlag (SynthesisedType :: _) = True
+    hasSynthFlag (_ :: xs) = hasSynthFlag xs
+
+    showNewSynthTypes : Int -> Core ()
+    showNewSynthTypes startIdx = do
+      defs <- get Ctxt
+      let endIdx = nextEntry (gamma defs)
+      showRange defs startIdx endIdx
+      where
+        showRange : Defs -> Int -> Int -> Core ()
+        showRange defs idx end
+            = when (idx < end) $
+                do Just gdef <- lookupCtxtExact (Resolved idx) (gamma defs)
+                      | Nothing => showRange defs (idx + 1) end
+                   when (hasSynthFlag (flags gdef)) $ do
+                     ty <- displayType True defs (fullname gdef, idx, gdef)
+                     iputStrLn $ reAnnotate Syntax ty
+                   showRange defs (idx + 1) end
 
 export
 compileExp : {auto c : Ref Ctxt Defs} ->
@@ -926,6 +950,12 @@ process (CheckWithImplicits itm)
          result <- process (Check itm)
          setOpt (ShowImplicits showImplicits)
          pure result
+process (AddType n)
+    = do defs <- get Ctxt
+         case !(lookupCtxtName n (gamma defs)) of
+              [] => undefinedName replFC n
+              ts => do tys <- traverse (displayType True defs) ts
+                       pure (Printed $ vsep $ map (reAnnotate Syntax) tys)
 process (PrintDef (PRef fc fn))
     = do defs <- get Ctxt
          case !(lookupCtxtName fn (gamma defs)) of

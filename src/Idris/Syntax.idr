@@ -752,6 +752,7 @@ data REPLCmd : Type where
      ShowVersion : REPLCmd
      Quit : REPLCmd
      NOP : REPLCmd
+     AddType : Name -> REPLCmd
      ImportPackage : String -> REPLCmd
 
 public export

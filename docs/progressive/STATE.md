@@ -106,6 +106,20 @@ All 4 typed hole tests:
 | hole003  | PASS   | Hole in where clause               |
 | hole004  | PASS   | Hole in let binding                |
 
+### Block 6: Progressive REPL
+
+Auto-display of inferred types after unannotated definitions in the REPL:
+```
+Main> :let add x y = x + y
+add : a -> a -> a
+```
+
+New `:addtype` command displays type signature without module prefix:
+```
+Main> :addtype add
+add : a -> a -> a
+```
+
 ### Tutorial (4 stages, identical output)
 
 | Stage  | Annotations              | Output Identical |
@@ -173,6 +187,9 @@ Key helpers: `collectCaseBlocks`, `addCBCallArgs`/`addCBCallArgsTree`,
 - `src/Idris/ProcessIdr.idr` — `showSynthesisedTypes`
 - `src/Idris/Progressive/ErrorLevel.idr` — annotation level detection, progressive mode detection
 - `src/Idris/Error.idr` — beginner-friendly error messages for progressive modules
+- `src/Idris/REPL.idr` — auto-display inferred types, `:addtype` command
+- `src/Idris/Syntax.idr` — `AddType` REPLCmd constructor
+- `src/Idris/Parser.idr` — `:addtype` parser entry
 
 ## Known Limitations
 

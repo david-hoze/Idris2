@@ -2238,6 +2238,7 @@ knownCommands =
   , ("gd", "Try to generate a definition using proof-search")
   , ("gdnext", "Show next definition")
   , ("version", "Display the Idris version")
+  , ("addtype", "Display the type signature for a name (short form, ready to paste)")
   ] ++
   explain ["?", "h", "help"] (unlines     -- FIXME: this should be a multiline string (see #2087)
         [ "Display help text, optionally of a specific command.\n"
@@ -2720,6 +2721,7 @@ parserCommandsForHelp =
   , editLineNameOptionArgCmd (ParseREPLCmd ["gd"]) GenerateDef (firstHelpLine "gd")
   , noArgCmd (ParseREPLCmd ["gdnext"]) (Editing GenerateDefNext) (firstHelpLine "gdnext")
   , noArgCmd (ParseREPLCmd ["version"]) ShowVersion (firstHelpLine "version")
+  , nameArgCmd (ParseREPLCmd ["addtype"]) AddType (firstHelpLine "addtype")
   , helpCmd (ParseREPLCmd ["?", "h", "help"]) Help (firstHelpLine "?")
   , declsArgCmd (ParseKeywordCmd ["let"]) NewDefn (firstHelpLine "let")
   , exprArgCmd (ParseREPLCmd ["fs", "fsearch"]) FuzzyTypeSearch (firstHelpLine "fs")
