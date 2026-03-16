@@ -3,7 +3,34 @@ module Idris.Desugar.Mutual
 import Idris.Syntax
 import TTImp.TTImp
 
+import Libraries.Data.WithDefault
+
 %default total
+
+-- Extract the function name from a PTerm LHS by stripping applications.
+export
+getFnName : PTerm -> Maybe Name
+getFnName (PRef _ n) = Just n
+getFnName (PApp _ f _) = getFnName f
+getFnName (PNamedApp _ f _ _) = getFnName f
+getFnName (PAutoApp _ f _) = getFnName f
+getFnName (PWithApp _ f _) = getFnName f
+getFnName _ = Nothing
+
+-- Count explicit arguments in a PTerm LHS (number of PApp wrappings).
+export
+countExplicitArgs : PTerm -> Nat
+countExplicitArgs (PApp _ f _) = 1 + countExplicitArgs f
+countExplicitArgs _ = 0
+
+-- Collect names that have explicit type claims in a list of declarations.
+export
+claimedNames : List PDecl -> List Name
+claimedNames [] = []
+claimedNames (d :: ds)
+  = case d.val of
+         PClaim claim => claim.type.nameList ++ claimedNames ds
+         _ => claimedNames ds
 
 -- Get the declaration to process on each pass of a mutual block
 -- Essentially: types on the first pass

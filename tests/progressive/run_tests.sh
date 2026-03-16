@@ -10,7 +10,7 @@
 IDRIS2="${IDRIS2:-$(cd "$(dirname "$0")/../.." && pwd)/build/exec/idris2}"
 
 # Ensure correct Chez Scheme is on PATH (console build, not GUI)
-export PATH="/home/natanh/chez/bin:/mingw64/bin:/usr/bin:$PATH"
+export PATH="/home/natanh/chez/bin:/ucrt64/bin:/usr/bin:$PATH"
 
 PASS=0
 FAIL=0

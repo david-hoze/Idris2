@@ -40,6 +40,7 @@ Main>  <expr>                                                Evaluate an express
  :gd               <l:number> <n:string> <r:number|0>  Try to generate a definition using proof-search
  :gdnext                                               Show next definition
  :version                                              Display the Idris version
+ :addtype          <name>                              Display the type signature for a name (short form, ready to paste)
  :? :h :help       <string>                            Display help text, optionally of a specific command.
  :let              <decls>                             Define a new value.
  :fs :fsearch      <expr>                              Search for global definitions by sketching the names distribution of the wanted type(s).
@@ -85,6 +86,7 @@ Main>  <expr>                                                Evaluate an express
  :gd               <l:number> <n:string> <r:number|0>  Try to generate a definition using proof-search
  :gdnext                                               Show next definition
  :version                                              Display the Idris version
+ :addtype          <name>                              Display the type signature for a name (short form, ready to paste)
  :? :h :help       <string>                            Display help text, optionally of a specific command.
  :let              <decls>                             Define a new value.
  :fs :fsearch      <expr>                              Search for global definitions by sketching the names distribution of the wanted type(s).
@@ -130,6 +132,7 @@ Main>  <expr>                                                Evaluate an express
  :gd               <l:number> <n:string> <r:number|0>  Try to generate a definition using proof-search
  :gdnext                                               Show next definition
  :version                                              Display the Idris version
+ :addtype          <name>                              Display the type signature for a name (short form, ready to paste)
  :? :h :help       <string>                            Display help text, optionally of a specific command.
  :let              <decls>                             Define a new value.
  :fs :fsearch      <expr>                              Search for global definitions by sketching the names distribution of the wanted type(s).

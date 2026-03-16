@@ -71,6 +71,19 @@ types of the detected arity.
   can unify with f's domain). IBindVar would create rigid variables that can't
   unify across different HOF args.
 
+### Mutual Recursion Forward Declarations
+
+When processing a `PMutual` block, `processDecl` in `ProcessIdr.idr` generates
+IClaim forward declarations for any functions that lack explicit type signatures.
+`mutualForwardDecls` scans all PDef clauses via `extractFnEntries`, computes
+arity from `countExplicitArgs`, and emits `IClaim` with holey types
+(`_ -> _ -> ... -> _`). After processing the forward declarations,
+`markForwardDeclHoles` walks each forward-declared name's type and sets the
+`constSolvable` flag on all type metas — this is critical because pattern
+matching against literal constructors (like `0`, `True`) creates constraints
+that `patternEnv` cannot solve (the pattern is a complex expression, not a
+simple variable), but `tryConstantSolve` can.
+
 ### constSolvable Flag
 
 The `constSolvable` flag on `HoleFlags` allows type metas to be solved by
@@ -154,7 +167,8 @@ to paste into source code.
 ### User interface
 - `src/Idris/CommandLine.idr` — `--show-inferred-types` flag
 - `src/Idris/Session.idr` / `Options.idr` — `showInferredTypes` session option
-- `src/Idris/ProcessIdr.idr` — `showSynthesisedTypes`
+- `src/Idris/ProcessIdr.idr` — `showSynthesisedTypes`, mutual forward declarations
+- `src/Idris/Desugar/Mutual.idr` — exports `getFnName`, `countExplicitArgs`, `claimedNames`
 - `src/Idris/Progressive/ErrorLevel.idr` — annotation level detection, progressive mode detection
 - `src/Idris/Error.idr` — beginner-friendly error messages for progressive modules
 - `src/Idris/REPL.idr` — auto-display inferred types, `:addtype` command

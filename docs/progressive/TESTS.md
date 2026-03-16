@@ -1,6 +1,6 @@
 # Progressive Idris — Test Results
 
-**85/85 progressive tests passing. 705+ upstream tests, zero regressions.**
+**87/87 progressive tests passing. 705+ upstream tests, zero regressions.**
 
 ## Block 1: Type Synthesis (16/16)
 
@@ -127,6 +127,13 @@ MaybeMisspelling.
 | hof008    | PASS   | `myApply` monotonicity             | Annotated = unannotated output              |
 | hof009    | PASS   | `myMap` monotonicity               | Annotated = unannotated output              |
 | hof010    | PASS   | `compose` monotonicity             | Annotated = unannotated output              |
+
+## Stage 2: Mutual Recursion (2/2)
+
+| Test      | Status | Description                        | Notes                                      |
+|-----------|--------|------------------------------------|---------------------------------------------|
+| mutual001 | PASS   | `isEven`/`isOdd` mutual recursion  | Bool-returning mutual block, no annotations |
+| mutual002 | PASS   | `countDown`/`countUp` mutual recursion | String-returning mutual block, no annotations |
 
 ## Full Idris 2 Test Suite
 

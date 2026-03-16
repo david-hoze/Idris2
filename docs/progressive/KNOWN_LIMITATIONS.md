@@ -3,32 +3,21 @@
 This documents edge cases that do **not** work without type annotations in
 Progressive Idris, along with workarounds.
 
-## 1. Mutual Recursion
+## 1. ~~Mutual Recursion~~ (RESOLVED)
 
-**Status**: Does not work without annotations.
-
-Unannotated mutual recursion fails because each function is elaborated
-sequentially — when `isEven` is elaborated, `isOdd` has not yet been
-defined.
+**Status**: Works without annotations inside `mutual` blocks (Stage 2).
 
 ```idris
--- FAILS: Undefined name isOdd
-isEven x = if x == 0 then True else isOdd (x - 1)
-isOdd x = if x == 0 then False else isEven (x - 1)
-```
-
-Even a `mutual` block does not help — Idris 2 still needs forward-declared
-type signatures for mutual definitions.
-
-**Workaround**: Add type annotations to all mutually recursive functions.
-
-```idris
+-- Works: mutual block auto-generates forward declarations
 mutual
-  isEven : Integer -> Bool
-  isEven x = if x == 0 then True else isOdd (x - 1)
-  isOdd : Integer -> Bool
-  isOdd x = if x == 0 then False else isEven (x - 1)
+  isEven 0 = True
+  isEven n = isOdd (n - 1)
+  isOdd 0 = False
+  isOdd n = isEven (n - 1)
 ```
+
+Note: Bare mutual recursion (without the `mutual` keyword) still requires
+type annotations or a `mutual` block.
 
 ## 2. Higher-Order Functions — Advanced Patterns
 
@@ -149,3 +138,4 @@ The following features work **without** type annotations:
 | HOF + constructor patterns         | `myMap f [] = []; myMap f (x::xs) = f x :: myMap f xs` |
 | Function composition               | `compose f g x = f (g x)`                      |
 | Argument flipping                  | `myFlip f x y = f y x`                         |
+| Mutual recursion (in `mutual`)     | `mutual { isEven 0 = True; ... isOdd 0 = False; ... }` |

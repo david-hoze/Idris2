@@ -1,6 +1,6 @@
 # Progressive Idris — Stage 1
 
-**Status**: Complete. 75/75 progressive tests passing, zero upstream regressions.
+**Status**: Complete. 87/87 progressive tests passing, zero upstream regressions.
 
 Progressive Idris lets you write Idris 2 code without type annotations and
 add them gradually. The compiler infers types for unannotated functions,
@@ -27,6 +27,7 @@ beginner-friendly error messages.
 - Polymorphic generalization (`id x = x` → `a -> a`)
 - Typeclass constraint inference (`add x y = x + y` → `Num a => a -> a -> a`)
 - Type propagation from annotated callees to unannotated callers
+- Mutual recursion in `mutual` blocks without annotations
 - Typed holes in unannotated functions
 - REPL auto-display of inferred types + `:addtype` command
 
@@ -37,7 +38,7 @@ Verified by 30 monotonicity tests (10 groups × 3 versions each).
 
 ### Known limitations
 
-1. Mutual recursion — needs type annotations (forward declarations)
+1. ~~Mutual recursion~~ — resolved (Stage 2, `mutual` blocks)
 2. Higher-order functions (3+ args) — `apply f x = f x` needs annotation
 3. Ambiguous constructors — `::` needs disambiguation when Vect imported
 4. Where-clause patterns with unannotated parent
@@ -53,7 +54,7 @@ source files and their roles.
 # Build compiler
 bash scripts/rebuild.sh
 
-# Run progressive tests (75/75)
+# Run progressive tests (87/87)
 bash tests/progressive/run_tests.sh
 
 # Run full upstream test suite (705+, zero regressions)

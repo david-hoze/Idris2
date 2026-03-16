@@ -103,11 +103,10 @@ Type conflict for 'x':
 These uses are incompatible.
 ```
 
-### Mutual Recursion Without Annotations
+### ~~Mutual Recursion Without Annotations~~ (DONE — Stage 2)
 
-Currently requires forward declarations. Could potentially be solved
-with a dependency analysis pass that identifies SCCs and synthesizes
-types for all members simultaneously.
+Implemented via auto-generated forward declarations in `processDecl` for
+`PMutual` blocks. See ARCHITECTURE.md for details.
 
 ### Where-Clause Patterns Without Parent Annotation
 

@@ -12,7 +12,7 @@ set -o pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
-export PATH="/home/natanh/chez/bin:/mingw64/bin:/usr/bin:$PATH"
+export PATH="/home/natanh/chez/bin:/ucrt64/bin:/usr/bin:$PATH"
 
 # Kill any lingering scheme processes that hold DLL locks
 echo "=== Killing scheme.exe processes ==="

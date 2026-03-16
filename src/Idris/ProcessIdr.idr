@@ -57,6 +57,72 @@ missingIncremental ttcFile
                   pure False)
           (\error => pure False)
 
+-- Build a holey RawImp type: _ -> _ -> ... -> _ with the given arity.
+-- Uses Implicit fc False (flexible metas) so processType creates proper holes.
+mkHoleyRawImp : FC -> Nat -> RawImp
+mkHoleyRawImp fc 0 = Implicit fc False
+mkHoleyRawImp fc (S k) = IPi fc top Explicit Nothing (Implicit fc False) (mkHoleyRawImp fc k)
+
+-- Extract unique (name, arity) pairs from all clauses in a PDef.
+-- collectDefs merges consecutive clause groups, so a single PDef
+-- may contain clauses for multiple functions.
+extractFnEntries : List Name -> List PClause -> List (Name, Nat, FC)
+extractFnEntries seen [] = []
+extractFnEntries seen (MkPatClause cfc lhs _ _ :: cs)
+  = case getFnName lhs of
+         Just n => if elem n seen
+                      then extractFnEntries seen cs
+                      else (n, countExplicitArgs lhs, cfc) :: extractFnEntries (n :: seen) cs
+         Nothing => extractFnEntries seen cs
+extractFnEntries seen (_ :: cs) = extractFnEntries seen cs
+
+-- For each PDef in a mutual block without a matching PClaim, generate
+-- IClaim ImpDecls with holey types. This pre-declares names so that
+-- mutually recursive functions can reference each other.
+mutualForwardDecls : List Name -> List PDecl -> List ImpDecl
+mutualForwardDecls claimed [] = []
+mutualForwardDecls claimed (d :: ds)
+  = case d.val of
+         PDef cs =>
+           let entries = extractFnEntries claimed cs
+               fwds = map (\(n, arity, cfc) =>
+                        IClaim $ MkFCVal cfc $ MkIClaimData top Public []
+                            $ Mk [cfc, MkFCVal cfc n] (mkHoleyRawImp cfc arity)) entries
+               newClaimed = map (\(n, _, _) => n) entries
+           in fwds ++ mutualForwardDecls (newClaimed ++ claimed) ds
+         _ => mutualForwardDecls claimed ds
+
+-- Mark a single hole as constSolvable if it exists and is still a Hole.
+markHoleConstSolvable : {auto c : Ref Ctxt Defs} -> Int -> Core ()
+markHoleConstSolvable idx
+  = do defs <- get Ctxt
+       Just gdef <- lookupCtxtExact (Resolved idx) (gamma defs)
+         | Nothing => pure ()
+       case definition gdef of
+            Hole locs flags =>
+              do let flags' = { constSolvable := True } flags
+                 updateDef (Resolved idx) (const (Just (Hole locs flags')))
+            _ => pure ()
+
+-- Walk a term and mark all unsolved hole metas as constSolvable.
+markForwardHoles : {vars : _} -> {auto c : Ref Ctxt Defs} -> Term vars -> Core ()
+markForwardHoles (Bind _ _ b scope)
+  = do markForwardHoles (binderType b); markForwardHoles scope
+markForwardHoles (Meta _ _ idx args)
+  = do markHoleConstSolvable idx; traverse_ markForwardHoles args
+markForwardHoles (App _ f a) = do markForwardHoles f; markForwardHoles a
+markForwardHoles _ = pure ()
+
+-- After forward-declaring a name, mark all metas in its type as constSolvable.
+-- This allows the unifier to solve them as constant functions when pattern
+-- matching substitutes constructors into meta arguments.
+markForwardDeclHoles : {auto c : Ref Ctxt Defs} -> Name -> Core ()
+markForwardDeclHoles n
+  = do defs <- get Ctxt
+       Just gdef <- lookupCtxtExact n (gamma defs)
+         | Nothing => pure ()
+       markForwardHoles (type gdef)
+
 processDecls : {auto c : Ref Ctxt Defs} ->
                {auto u : Ref UST UState} ->
                {auto s : Ref Syn SyntaxInfo} ->
@@ -77,8 +143,19 @@ processDecl : {auto c : Ref Ctxt Defs} ->
 processDecl (MkWithData _ $ PNamespace ns ps)
     = withExtendedNS ns $ processDecls ps
 processDecl (MkWithData _ $ PMutual ps)
-    = let (tys, defs) = splitMutual ps in
-      processDecls (tys ++ defs)
+    = let (tys, defs) = splitMutual ps
+          claimed = claimedNames ps
+          forwards = mutualForwardDecls claimed ps
+          fwdNames = map (\(n, _, _) => n) $
+                       concatMap (\d => case d.val of
+                                          PDef cs => extractFnEntries claimed cs
+                                          _ => []) ps
+      in do traverse_ (Check.processDecl [] (MkNested []) Env.empty) forwards
+            -- Mark forward-declared holes as constSolvable so the unifier
+            -- can solve them when pattern matching substitutes constructors
+            Core.Core.List.traverse_ (\n => do n' <- inCurrentNS n
+                                               markForwardDeclHoles n') fwdNames
+            processDecls (tys ++ defs)
 
 processDecl decl
     = catch (do impdecls <- desugarDecl [] decl
