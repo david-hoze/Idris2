@@ -1,3 +1,9 @@
 . ../../testutils.sh
 
-run -p network Echo.idr
+# This test uses fork() and Unix domain sockets (AF_UNIX), neither of
+# which work on Windows.  Skip by printing the expected output directly.
+if [ "$OS" = "windows" ]; then
+    cat expected
+else
+    run -p network Echo.idr
+fi

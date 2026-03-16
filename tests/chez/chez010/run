@@ -11,5 +11,9 @@ case $(uname -s) in
 esac
 
 ${MAKE} all > /dev/null
-run CB.idr
+
+# Sort output: C printf and Chez Scheme IO use independent stdio buffers
+# that can flush in non-deterministic order on Windows.
+run CB.idr | safesort
+
 ${MAKE} clean > /dev/null

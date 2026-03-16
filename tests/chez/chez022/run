@@ -11,6 +11,10 @@ case $(uname -s) in
 esac
 
 ${MAKE} all > /dev/null
-run usealloc.idr
+
+# Sort output: GC finalizer ordering between Scheme callbacks and C
+# free functions is non-deterministic across platforms.
+run usealloc.idr | safesort
+
 . ../../testutils.sh
 ${MAKE} clean > /dev/null

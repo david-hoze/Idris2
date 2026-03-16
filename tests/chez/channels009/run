@@ -1,3 +1,4 @@
 . ../../testutils.sh
 
-run Main.idr
+# Sort output: consumer thread print order is non-deterministic.
+run Main.idr | safesort

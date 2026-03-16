@@ -460,34 +460,42 @@
   '()))
 
 (define (blodwen-channel-get-with-timeout ty chan timeout)
-  ;; timeout is in milliseconds, convert to nanoseconds
+  ;; timeout is in milliseconds, convert to nanoseconds.
+  ;; Uses wall-clock time instead of accumulating sleep increments,
+  ;; because on Windows the actual sleep duration can be orders of
+  ;; magnitude longer than requested (15.6ms minimum vs 10us requested).
   (let* ([timeout-ns (* timeout 1000000)]
          [sleep-ns 10000] ; 10 us step
          [sleep-time (make-time 'time-duration (mod sleep-ns 1000000000)
-                                                (div sleep-ns 1000000000))])
-    (let loop ([elapsed 0])
-      (if (mutex-acquire (channel-read-mut chan) #f)
-          (let* ([val-box  (channel-val-box chan)]
-                 [the-val  (unbox val-box)])
-            (if (null? the-val)
-                (if (>= elapsed timeout-ns)
-                    (begin
-                      (mutex-release (channel-read-mut chan))
-                      '())
-                    (begin
-                      (mutex-release (channel-read-mut chan))
-                      (sleep sleep-time)
-                      (loop (+ elapsed sleep-ns))))
-                (let* ([read-box (channel-read-box chan)]
-                       [read-cv  (channel-read-cv chan)])
-                  (set-box! val-box '())
-                  (set-box! read-box #t)
-                  (mutex-release (channel-read-mut chan))
-                  (condition-signal read-cv)
-                  (box the-val))))
-          (begin
-            (sleep sleep-time)
-            (loop (+ elapsed sleep-ns)))))))
+                                                (div sleep-ns 1000000000))]
+         [start (current-time 'time-monotonic)])
+    (let loop ()
+      (let* ([now (current-time 'time-monotonic)]
+             [diff (time-difference now start)]
+             [elapsed-ns (+ (* (time-second diff) 1000000000)
+                            (time-nanosecond diff))])
+        ;; Check timeout BEFORE checking for a value, so a value that
+        ;; arrives after the deadline is not returned.
+        (if (>= elapsed-ns timeout-ns)
+            '()
+            (if (mutex-acquire (channel-read-mut chan) #f)
+                (let* ([val-box  (channel-val-box chan)]
+                       [the-val  (unbox val-box)])
+                  (if (null? the-val)
+                      (begin
+                        (mutex-release (channel-read-mut chan))
+                        (sleep sleep-time)
+                        (loop))
+                      (let* ([read-box (channel-read-box chan)]
+                             [read-cv  (channel-read-cv chan)])
+                        (set-box! val-box '())
+                        (set-box! read-box #t)
+                        (mutex-release (channel-read-mut chan))
+                        (condition-signal read-cv)
+                        (box the-val))))
+                (begin
+                  (sleep sleep-time)
+                  (loop))))))))
 
 ;; Mutex
 
