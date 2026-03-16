@@ -44,6 +44,33 @@ Progressive typing extends this to handle multi-clause definitions and
 constructor patterns by desugaring to single-clause with `case`, then
 using `guessScrType` from `Elab.Case` to infer types from constructors.
 
+### Higher-Order Function Inference (Stage 2)
+
+`hasHOFUsage` detects when pattern variables are used as function heads in
+clause bodies. When detected, `lookupOrAddAlias` routes to
+`synthTypeFromPatterns` instead of the simple alias mechanism.
+
+`scanAppsIn` walks clause bodies and records (name, explicitArgCount) for
+each application of a target variable. `maxArityFor` computes the maximum
+arity. `enhanceWithHOFAnalysis` replaces bare-hole arg types with function
+types of the detected arity.
+
+**Two-path type generation** based on HOF arg count:
+
+- **Single HOF arg** (e.g., `myMap f [] = []; myMap f (x::xs) = f x :: myMap f xs`):
+  Uses `mkFuncTypeBindVars` to create IBindVar-named types (`hof0_0 -> hof0_1`),
+  then `prependImplicitPis` adds explicit `{hof0_0 : Type} -> {hof0_1 : Type} ->`
+  at the outer scope. `bindVarsToVars` converts IBindVar refs to IVar after
+  prepending. This avoids the **Pi-scoped codomain problem**: without outer
+  binders, inner type metas depend on Pi-bound domain variables, creating
+  unsolvable cross-scope constraints.
+
+- **Multiple HOF args** (e.g., `compose f g x = f (g x)`):
+  Uses `mkFuncTypeImplicit` to create Implicit-hole types (`_ -> _`). These
+  create flexible metavariables that allow cross-arg unification (g's codomain
+  can unify with f's domain). IBindVar would create rigid variables that can't
+  unify across different HOF args.
+
 ### constSolvable Flag
 
 The `constSolvable` flag on `HoleFlags` allows type metas to be solved by

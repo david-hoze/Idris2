@@ -92,3 +92,44 @@ It can only:
 - **75 progressive tests**: All passing
 - **705+ upstream tests**: Zero regressions (only pre-existing `channels009`
   failure on Windows)
+
+## Stage 2: Higher-Order Function Inference
+
+### Overview
+Detect when pattern-bound variables are used as functions in clause bodies
+and generate appropriate function-type constraints. Supports simple
+application (`apply f x = f x`), map over data structures (`myMap f [] = [];
+myMap f (x::xs) = f x :: myMap f xs`), and function composition
+(`compose f g x = f (g x)`).
+
+### Changes
+
+#### HOF Body Analysis (10 tests)
+- **`scanAppsIn`** in `ProcessDef.idr`: Scans clause bodies for applications
+  where pattern variables appear as function heads. Returns (name, arity) pairs.
+- **`maxArityFor`**: Computes maximum explicit application arity per variable.
+- **`hasHOFUsage`**: Quick check if any pattern variables are used as functions
+  in clause bodies. Used by `lookupOrAddAlias` to route HOF definitions to
+  `synthTypeFromPatterns`.
+
+#### Two-Path Type Generation
+- **`mkFuncTypeBindVars`**: Generates function types using IBindVar names
+  (e.g., `hof0_0 -> hof0_1`). Used for single-HOF-arg cases to avoid
+  Pi-scoped codomain issues.
+- **`mkFuncTypeImplicit`**: Generates function types using Implicit holes
+  (e.g., `_ -> _`). Used for multi-HOF-arg cases to allow flexible
+  cross-arg unification.
+- **`enhanceWithHOFAnalysis`**: Replaces bare-hole arg types with function
+  types. Takes a `useBindVars` flag to select generation strategy.
+- **`countHOFEnhanced`**: Counts HOF-enhanced positions to select path.
+- **`prependImplicitPis`** / **`bindVarsToVars`**: Manage IBindVar scope
+  by prepending explicit implicit Pi binders and converting IBindVar
+  references to IVar.
+- **`isImplicitHole`**: Distinguishes constructor-derived arg types from
+  unguessed bare holes.
+- Modified files: `ProcessDef.idr`
+
+### Test Results
+
+- **85 progressive tests**: All passing (75 Stage 1 + 10 Stage 2)
+- **705+ upstream tests**: Zero regressions

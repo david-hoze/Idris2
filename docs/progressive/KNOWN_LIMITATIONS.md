@@ -30,32 +30,50 @@ mutual
   isOdd x = if x == 0 then False else isEven (x - 1)
 ```
 
-## 2. Higher-Order Functions (3+ arguments)
+## 2. Higher-Order Functions — Advanced Patterns
 
-**Status**: Does not work without annotations.
+**Status**: Basic HOF works (Stage 2). Some advanced patterns require annotations.
 
-Functions like `apply f x = f x` or `compose f g x = f (g x)` require
-Hindley-Milner inference to determine that `f` is a function type. The
-progressive type synthesis mechanism works by unifying with concrete
-constructor types, not by inferring function types from application.
+Simple HOFs are fully supported:
 
 ```idris
--- FAILS: Can't solve constraint between: ?_ and ?_ -> ?_
-apply f x = f x
-
--- FAILS: same reason
+-- All of these work without annotations:
+myApply f x = f x
+myMap f [] = []; myMap f (x :: xs) = f x :: myMap f xs
 compose f g x = f (g x)
+myFlip f x y = f y x
 ```
 
-Two-argument functions that apply their argument work fine because the
-alias mechanism handles them. The issue is specifically with inferring
-that a parameter has a function type.
+**Foldr pattern** does not work — the accumulator type and return type
+have different numbers of local variables in scope, and the unifier
+picks the wrong direction:
+
+```idris
+-- FAILS: Can't solve constraint between metas with different scopes
+myFoldr f acc [] = acc
+myFoldr f acc (x :: xs) = f x (myFoldr f acc xs)
+```
+
+**HOF args with concrete return type** constraints also fail — e.g.,
+`filter` where `if f x then ...` forces the return type to Bool, but
+the HOF type variable is rigid:
+
+```idris
+-- FAILS: Can't solve constraint between ?_ -> Bool and Integer -> Bool
+myFilter f [] = []
+myFilter f (x :: xs) = if f x then x :: myFilter f xs else myFilter f xs
+```
 
 **Workaround**: Add type annotations.
 
 ```idris
-apply : (a -> b) -> a -> b
-apply f x = f x
+myFoldr : (a -> b -> b) -> b -> List a -> b
+myFoldr f acc [] = acc
+myFoldr f acc (x :: xs) = f x (myFoldr f acc xs)
+
+myFilter : (a -> Bool) -> List a -> List a
+myFilter f [] = []
+myFilter f (x :: xs) = if f x then x :: myFilter f xs else myFilter f xs
 ```
 
 ## 3. Dependent Pattern Matching (without annotation)
@@ -127,3 +145,7 @@ The following features work **without** type annotations:
 | Typeclass-constrained functions    | `add x y = x + y` (generalized to `Num a => ...`) |
 | Mixed annotation levels            | Some functions annotated, others not            |
 | Deeply nested compositions         | `pipeline x = dbl (inc (square x))`             |
+| Higher-order application           | `myApply f x = f x`                            |
+| HOF + constructor patterns         | `myMap f [] = []; myMap f (x::xs) = f x :: myMap f xs` |
+| Function composition               | `compose f g x = f (g x)`                      |
+| Argument flipping                  | `myFlip f x y = f y x`                         |

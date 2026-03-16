@@ -91,6 +91,18 @@ greet name = do
   putStrLn "How are you?"
 ```
 
+### Higher-order functions
+
+```idris
+myApply f x = f x           -- inferred: (a -> b) -> a -> b
+compose f g x = f (g x)     -- inferred: (a -> b) -> (c -> a) -> c -> b
+myFlip f x y = f y x        -- inferred: (a -> b -> c) -> b -> a -> c
+
+-- Works with constructor patterns too:
+myMap f [] = []
+myMap f (x :: xs) = f x :: myMap f xs  -- inferred: (a -> b) -> List a -> List b
+```
+
 ### If-then-else and case expressions
 
 ```idris
@@ -171,7 +183,7 @@ Some features still require type annotations:
 | Feature                    | Why                                      | Workaround              |
 |----------------------------|------------------------------------------|-------------------------|
 | Mutual recursion           | Forward references need declarations     | Add type signatures     |
-| Higher-order (3+ args)     | Can't infer function types from usage    | Add type signatures     |
+| foldr/filter patterns      | Unifier limitation with multi-arg HOFs   | Add type signatures     |
 | Ambiguous constructors     | `::` could be List, Vect, or Stream      | Add type signature      |
 | Where-clause patterns      | Needs annotated parent for context       | Annotate parent function|
 

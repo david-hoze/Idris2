@@ -1,6 +1,6 @@
 # Progressive Idris — Test Results
 
-**75/75 progressive tests passing. 705+ upstream tests, zero regressions.**
+**85/85 progressive tests passing. 705+ upstream tests, zero regressions.**
 
 ## Block 1: Type Synthesis (16/16)
 
@@ -112,6 +112,21 @@ MaybeMisspelling.
 | Stage1 | API boundary             | ✓                |
 | Stage2 | Full with polymorphism   | ✓                |
 | Stage3 | Dependent types+totality | ✓                |
+
+## Stage 2: Higher-Order Functions (10/10)
+
+| Test      | Status | Description                        | Notes                                      |
+|-----------|--------|------------------------------------|---------------------------------------------|
+| hof001    | PASS   | `myApply f x = f x`               | Simple application, single HOF arg          |
+| hof002    | PASS   | `myMap f [] = []; myMap f (x::xs) = f x :: myMap f xs` | HOF + constructor patterns (IBindVar path) |
+| hof003    | PASS   | `compose f g x = f (g x)`         | Multiple HOF args (Implicit path)           |
+| hof004    | PASS   | `myFlip f x y = f y x`            | 2-arity HOF, single arg (IBindVar path)     |
+| hof005    | PASS   | `myApply f x = f x` with annotated callee | HOF + propagation from typed function |
+| hof006    | PASS   | `myApply` with explicit annotation | Monotonicity: annotated version matches     |
+| hof007    | PASS   | `myLiftA2 f g h x = f (g x) (h x)` | 3 HOF args (Implicit path)               |
+| hof008    | PASS   | `myApply` monotonicity             | Annotated = unannotated output              |
+| hof009    | PASS   | `myMap` monotonicity               | Annotated = unannotated output              |
+| hof010    | PASS   | `compose` monotonicity             | Annotated = unannotated output              |
 
 ## Full Idris 2 Test Suite
 

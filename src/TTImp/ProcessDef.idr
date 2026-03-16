@@ -845,7 +845,29 @@ synthTypeFromPatterns eopts nest env fc n cs
        argTypes <- guessAllArgTypes fc cs 0 explicitArgs
        mRetTy <- guessReturnType fc cs
        let retTy = fromMaybe (Implicit fc False) mRetTy
-       let synthType = buildSynthType fc 0 argTypes retTy
+       -- Decide between IBindVar and Implicit for HOF function types.
+       -- IBindVar + prependImplicitPis: puts HOF type vars at outer scope,
+       --   needed when arity > 1 (avoids Pi-scoped codomain problem).
+       --   But fails for multiple HOF args (rigid vars can't unify cross-arg).
+       -- Implicit: creates flexible metas that allow cross-arg unification
+       --   (e.g., compose's g-codomain = f-domain), but fails for arity > 1
+       --   due to Pi-scoped metas.
+       -- Strategy: count HOF-enhanced positions. Single HOF arg → IBindVar.
+       --   Multiple HOF args → Implicit (flexible cross-arg unification).
+       let argTypesBV = enhanceWithHOFAnalysis fc cs 0 True explicitArgs argTypes
+       let hofCount = countHOFEnhanced argTypes argTypesBV
+       let useBindVars = hofCount <= 1
+       let argTypes' = if useBindVars then argTypesBV
+                          else enhanceWithHOFAnalysis fc cs 0 False explicitArgs argTypes
+       log "declare.def" 10 $ "After HOF analysis (bindVars=" ++ show useBindVars
+                           ++ ", hofCount=" ++ show hofCount ++ "): " ++ show argTypes'
+       let hofVars = collectAllBindVars argTypes' retTy
+       let synthType = if useBindVars && not (null hofVars)
+             then let argTypes'' = map bindVarsToVars argTypes'
+                      retTy' = bindVarsToVars retTy
+                      innerType = buildSynthType fc 0 argTypes'' retTy'
+                  in prependImplicitPis fc hofVars innerType
+             else buildSynthType fc 0 argTypes' retTy
        log "declare.def" 5 $
          "No type declaration for " ++ show n
          ++ " (" ++ show (length explicitArgs) ++ " args). "
@@ -945,6 +967,115 @@ synthTypeFromPatterns eopts nest env fc n cs
            rest' <- guessAllArgTypes fc cs (S pos) rest
            pure (argTy :: rest')
 
+    -- HOF body analysis: detect when pattern variables are used as functions
+    -- in clause bodies and compute their max explicit application arity.
+
+    -- Get the IBindVar name from a pattern, if it is a variable pattern
+    getBindName : RawImp -> Maybe Name
+    getBindName (IBindVar _ n) = Just n
+    getBindName _ = Nothing
+
+    -- Collect all variable names at a given explicit-arg position across clauses
+    argNamesAtPos : Nat -> List ImpClause -> List Name
+    argNamesAtPos pos [] = []
+    argNamesAtPos pos (PatClause _ lhs _ :: rest)
+      = let (_, args) = getFnArgs lhs []
+            explArgs = mapMaybe isExplicit args
+        in case drop pos (map snd explArgs) of
+                (pat :: _) => case getBindName pat of
+                                   Just nm => nm :: argNamesAtPos pos rest
+                                   Nothing => argNamesAtPos pos rest
+                [] => argNamesAtPos pos rest
+    argNamesAtPos pos (_ :: rest) = argNamesAtPos pos rest
+
+    -- Scan a RawImp for applications where the head is a target variable.
+    -- Returns list of (name, explicitArgCount).
+    -- Handles both application chains and non-application constructs.
+    scanAppsIn : List Name -> RawImp -> List (Name, Nat)
+    scanAppsIn targets tm
+      = let (hd, allArgs) = getFnArgs tm []
+            explArgs = mapMaybe isExplicit allArgs
+        in if null allArgs
+              then -- Not an application chain; check special constructs
+                   case tm of
+                     ICase _ _ _ scrut alts =>
+                       scanAppsIn targets scrut
+                       ++ concatMap (\case PatClause _ _ rhs => scanAppsIn targets rhs
+                                           _ => []) alts
+                     ILet _ _ _ _ ty val sc =>
+                       scanAppsIn targets ty
+                       ++ scanAppsIn targets val
+                       ++ scanAppsIn targets sc
+                     ILocal _ _ body => scanAppsIn targets body
+                     ILam _ _ _ _ ty sc =>
+                       scanAppsIn targets ty ++ scanAppsIn targets sc
+                     IUpdate _ _ inner => scanAppsIn targets inner
+                     _ => []
+              else -- Application chain: check head and recurse into args
+                   (case hd of
+                      IVar _ n => if elem n targets
+                                     then [(n, length explArgs)]
+                                     else []
+                      _ => scanAppsIn targets hd)
+                   ++ concatMap (scanAppsIn targets . unIArg) allArgs
+
+    -- Compute max arity for a name from a list of (name, arity) pairs
+    maxArityFor : Name -> List (Name, Nat) -> Nat
+    maxArityFor n [] = 0
+    maxArityFor n ((n', a) :: rest)
+      = if n == n' then max a (maxArityFor n rest) else maxArityFor n rest
+
+    -- Generate a function type with k arrows using IBindVar.
+    -- Uses IBindVar so domain/codomain become implicit Pi binders at the
+    -- OUTER level (via prependImplicitPis). This is needed when HOF args
+    -- coexist with constructor-derived types, to give all metas the HOF
+    -- type variables in their scope.
+    -- E.g., for argPos=0, arity=1: (hof0_0 -> hof0_1)
+    mkFuncTypeBindVars : FC -> Nat -> Nat -> Nat -> RawImp
+    mkFuncTypeBindVars fc argPos idx Z
+      = IBindVar fc (UN (Basic ("hof" ++ show argPos ++ "_" ++ show idx)))
+    mkFuncTypeBindVars fc argPos idx (S k)
+      = IPi fc top Explicit Nothing
+            (IBindVar fc (UN (Basic ("hof" ++ show argPos ++ "_" ++ show idx))))
+            (mkFuncTypeBindVars fc argPos (S idx) k)
+
+    -- Generate a function type with k arrows using plain Implicit holes.
+    -- Used for pure alias-shaped HOFs (all args are bare holes) where
+    -- IBindHere in processType handles implicit binding naturally.
+    -- E.g., for arity=1: (_ -> _)
+    mkFuncTypeImplicit : FC -> Nat -> RawImp
+    mkFuncTypeImplicit fc Z = Implicit fc False
+    mkFuncTypeImplicit fc (S k)
+      = IPi fc top Explicit Nothing
+            (Implicit fc False)
+            (mkFuncTypeImplicit fc k)
+
+    -- Enhance guessed arg types with HOF body analysis.
+    -- For each position where guessAllArgTypes returned a bare hole (Implicit),
+    -- check if the arg is used as a function in the body and replace with
+    -- a function type if so.
+    -- When useBindVars is True, generates IBindVar-based types (for use
+    -- with prependImplicitPis). When False, generates Implicit-based types
+    -- (for pure alias-shaped HOFs where IBindHere handles binding).
+    enhanceWithHOFAnalysis : FC -> List ImpClause -> Nat -> Bool -> List (FC, RawImp) -> List RawImp -> List RawImp
+    enhanceWithHOFAnalysis fc cs pos useBindVars [] [] = []
+    enhanceWithHOFAnalysis fc cs pos useBindVars ((argfc, _) :: restArgs) (argTy :: restTys)
+      = let enhanced = case argTy of
+              Implicit _ False =>
+                let names = argNamesAtPos pos cs
+                    allHits = concatMap (\cl => case cl of
+                                PatClause _ _ rhs => scanAppsIn names rhs
+                                _ => []) cs
+                    maxA = foldl (\acc, n => max acc (maxArityFor n allHits)) 0 names
+                in if maxA > 0
+                      then if useBindVars
+                              then mkFuncTypeBindVars argfc pos 0 maxA
+                              else mkFuncTypeImplicit argfc maxA
+                      else argTy
+              _ => argTy
+        in enhanced :: enhanceWithHOFAnalysis fc cs (S pos) useBindVars restArgs restTys
+    enhanceWithHOFAnalysis _ _ _ _ _ _ = []
+
     -- Check if a RawImp is a numeric literal expression
     -- Covers: IPrimVal (BI _), IAlternative (UniqueDefault ...) [...],
     -- and IApp (IVar fromInteger) (IPrimVal (BI _))
@@ -1014,6 +1145,87 @@ synthTypeFromPatterns eopts nest env fc n cs
       = let vfc = virtualiseFC fc in
         IPi vfc top Explicit (Just (MN "arg" i)) argTy (buildSynthType fc (i + 1) rest retTy)
 
+    -- Collect all IBindVar names from a RawImp (used to find HOF type vars)
+    collectBindVars : RawImp -> List Name
+    collectBindVars (IBindVar _ n) = [n]
+    collectBindVars (IPi _ _ _ _ argTy retTy)
+      = collectBindVars argTy ++ collectBindVars retTy
+    collectBindVars (IApp _ f a) = collectBindVars f ++ collectBindVars a
+    collectBindVars (INamedApp _ f _ a) = collectBindVars f ++ collectBindVars a
+    collectBindVars _ = []
+
+    -- Collect IBindVar names from all arg types and return type
+    collectAllBindVars : List RawImp -> RawImp -> List Name
+    collectAllBindVars argTys retTy
+      = nub (concatMap collectBindVars argTys ++ collectBindVars retTy)
+
+    -- Replace IBindVar references with IVar references in a RawImp.
+    -- After manually prepending implicit Pi binders, IBindVar names
+    -- become proper variable references (IVar), not implicit binding sites.
+    bindVarsToVars : RawImp -> RawImp
+    bindVarsToVars (IBindVar bfc n)
+      = IVar bfc n
+    bindVarsToVars (IPi pfc c pi mn argTy retTy)
+      = IPi pfc c pi mn (bindVarsToVars argTy) (bindVarsToVars retTy)
+    bindVarsToVars (IApp afc f a)
+      = IApp afc (bindVarsToVars f) (bindVarsToVars a)
+    bindVarsToVars (INamedApp afc f nm a)
+      = INamedApp afc (bindVarsToVars f) nm (bindVarsToVars a)
+    bindVarsToVars other = other
+
+    -- Prepend implicit Pi binders for HOF type variables and convert
+    -- IBindVar references to IVar. This ensures Implicit holes in the
+    -- type are elaborated UNDER the implicit Pi binders, giving them
+    -- the HOF type variables in their scope.
+    prependImplicitPis : FC -> List Name -> RawImp -> RawImp
+    prependImplicitPis fc [] ty = ty
+    prependImplicitPis fc (n :: ns) ty
+      = IPi fc erased Implicit (Just n) (IType fc)
+            (prependImplicitPis fc ns ty)
+
+    -- Check if a RawImp is just a bare unsolved hole (Implicit _ False).
+    -- Used to distinguish constructor-derived arg types (e.g., List _)
+    -- from unguessed arg types (plain holes).
+    isImplicitHole : RawImp -> Bool
+    isImplicitHole (Implicit _ False) = True
+    isImplicitHole _ = False
+
+    -- Count positions where an originally-Implicit arg was enhanced to a
+    -- function type by HOF analysis.
+    countHOFEnhanced : List RawImp -> List RawImp -> Nat
+    countHOFEnhanced [] [] = 0
+    countHOFEnhanced (orig :: origs) (enh :: enhs)
+      = (if isImplicitHole orig && not (isImplicitHole enh) then 1 else 0)
+        + countHOFEnhanced origs enhs
+    countHOFEnhanced _ _ = 0
+
+-- Check if any of the given names appear as function heads (applied to
+-- at least one explicit argument) in a RawImp expression.
+-- Used to detect higher-order function usage in clause bodies.
+hasHOFUsage : List Name -> RawImp -> Bool
+hasHOFUsage names tm
+  = let (hd, allArgs) = getFnArgs tm []
+        explArgs = mapMaybe isExplicit allArgs
+    in if null allArgs
+          then -- Not an application; check sub-constructs
+               case tm of
+                 ICase _ _ _ scrut alts =>
+                   hasHOFUsage names scrut
+                   || any (\case PatClause _ _ r => hasHOFUsage names r
+                                 _ => False) alts
+                 ILet _ _ _ _ ty val sc =>
+                   hasHOFUsage names ty || hasHOFUsage names val || hasHOFUsage names sc
+                 ILocal _ _ body => hasHOFUsage names body
+                 ILam _ _ _ _ ty sc =>
+                   hasHOFUsage names ty || hasHOFUsage names sc
+                 IUpdate _ _ inner => hasHOFUsage names inner
+                 _ => False
+          else -- Application chain: check head and recurse into args
+               (case hd of
+                  IVar _ n => elem n names
+                  _ => hasHOFUsage names hd)
+               || any (hasHOFUsage names . unIArg) allArgs
+
 lookupOrAddAlias : {vars : _} ->
                    {auto m : Ref MD Metadata} ->
                    {auto c : Ref Ctxt Defs} ->
@@ -1022,7 +1234,7 @@ lookupOrAddAlias : {vars : _} ->
                    {auto o : Ref ROpts REPLOpts} ->
                    List ElabOpt -> NestedNames vars -> Env Term vars -> FC ->
                    Name -> List ImpClause -> Core (Maybe GlobalDef)
-lookupOrAddAlias eopts nest env fc n [cl@(PatClause _ lhs _)]
+lookupOrAddAlias eopts nest env fc n [cl@(PatClause _ lhs rhs)]
   = do defs <- get Ctxt
        log "declare.def.alias" 20 $ "Looking at \{show cl}"
        Nothing <- lookupCtxtExact n (gamma defs)
@@ -1031,6 +1243,13 @@ lookupOrAddAlias eopts nest env fc n [cl@(PatClause _ lhs _)]
        --   1) check whether it has the shape of an alias
        let Just (hd, args) = isAlias lhs
          | Nothing => synthTypeFromPatterns eopts nest env fc n [cl]
+       --   1b) if any arg is used as a function in the body,
+       --       delegate to synthTypeFromPatterns which does HOF analysis
+       let False = hasHOFUsage (map (snd . snd) args) rhs
+         | True => do log "declare.def" 5 $
+                        "HOF usage detected for " ++ show n
+                        ++ ", delegating to synthTypeFromPatterns"
+                      synthTypeFromPatterns eopts nest env fc n [cl]
        --   2) check whether it could be a misspelling
        log "declare.def" 5 $
          "Missing type declaration for the alias "

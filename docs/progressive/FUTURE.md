@@ -2,64 +2,64 @@
 
 ## Stage 2: Higher-Order Function Inference
 
-**Status**: Not started. Planned after Stage 1 is stable.
+**Status**: Complete. All 3 target programs compile and run correctly.
+10 tests added (85 total progressive tests passing).
 
-### Problem
-
-Currently, `apply f x = f x` fails because `synthTypeFromPatterns` only
-looks at constructor patterns (Z, S, True, False, [], ::, etc.) to
-guess argument types. When an argument is used in application position
-(`f x`), there's no mechanism to infer that `f` must be a function type.
-
-### Target Programs
+### Target Programs (all working)
 
 ```idris
 -- hof001: Simple application
-apply f x = f x
-main : IO ()
-main = printLn (apply (+ 1) (the Integer 41))
--- Expected: 42
+myApply f x = f x           -- infers (a -> b) -> a -> b
 
--- hof002: Map
+-- hof002: Map (HOF + constructor patterns)
 myMap f [] = []
-myMap f (x :: xs) = f x :: myMap f xs
-main : IO ()
-main = printLn (myMap (+ 10) [1, 2, 3])
--- Expected: [11, 12, 13]
+myMap f (x :: xs) = f x :: myMap f xs  -- infers (a -> b) -> List a -> List b
 
--- hof003: Composition
-compose f g x = f (g x)
-main : IO ()
-main = printLn (compose (* 2) (+ 1) (the Integer 20))
--- Expected: 42
+-- hof003: Composition (multiple HOF args)
+compose f g x = f (g x)     -- infers (a -> b) -> (c -> a) -> c -> b
 ```
 
-### Approach
+### How It Works
 
-In `synthTypeFromPatterns` (or during elaboration of synthesised types),
-when scanning clause bodies for usage patterns:
+**Body analysis**: `scanAppsIn` scans clause bodies for applications where
+pattern-bound variables appear as function heads. `maxArityFor` computes the
+maximum number of explicit arguments each variable is applied to.
 
-- If argument `f` appears as `f x` or `f x y`, generate a function-type
-  constraint for f's type: `?f_ty ~ ?a -> ?b` (or `?a -> ?b -> ?c` for 2 args)
-- The argument types `?a`, `?b` come from the types of `x`, `y`
-- The return type feeds into the function's return type
+**Two-path type generation** (based on HOF arg count):
 
-### Technical Context
+1. **Single HOF arg** (apply, myMap, myFlip): Uses `IBindVar` names for
+   function type domains/codomains, then `prependImplicitPis` adds explicit
+   implicit Pi binders at the outer scope. This avoids the Pi-scoped codomain
+   problem where inner type metas have extra Pi-bound variables in scope.
 
-The elaborator handles application (IApp) in `src/TTImp/Elab/App.idr` —
-it already creates function-type metas during elaboration. The issue is that
-`synthTypeFromPatterns` generates `_ -> _` for f's position, which is just a
-hole, not a function type.
+2. **Multiple HOF args** (compose): Uses `Implicit` holes for function types.
+   This allows flexible cross-arg unification (e.g., g's codomain = f's domain
+   in compose), which rigid IBindVar variables cannot provide.
 
-**Alternative approach**: Instead of pre-analyzing the body, change
-`synthTypeFromPatterns` to generate `_ -> _ -> _` as before but ensure
-the elaborator's normal application handling creates the right function-type
-constraints during elaboration. The problem might be that the synthesised
-type's holes aren't being unified properly.
+**Key helpers in ProcessDef.idr**:
+- `hasHOFUsage` — detects if any pattern variables are used as functions
+- `scanAppsIn` / `maxArityFor` — HOF arity analysis
+- `mkFuncTypeBindVars` — generates `hof0_0 -> hof0_1` IBindVar types
+- `mkFuncTypeImplicit` — generates `_ -> _` Implicit types
+- `enhanceWithHOFAnalysis` — replaces bare-hole arg types with function types
+- `countHOFEnhanced` — counts HOF-enhanced positions for path selection
+- `prependImplicitPis` / `bindVarsToVars` — IBindVar scope management
 
-**Debugging strategy**: Add debug output to see what types the elaborator
-infers for `f` in `apply f x = f x` and why they don't unify into a
-function type. Then fix the root cause.
+### Known Limitations
+
+- **foldr pattern** (`myFoldr f acc [] = acc; myFoldr f acc (x::xs) = f x (myFoldr f acc xs)`):
+  Fails due to meta-meta unification choosing the wrong direction. The
+  accumulator's type meta has fewer locals than the return type meta, and
+  the unifier always tries to solve the smaller one first.
+
+- **HOF args with concrete return types** (`myFilter f [] = []; myFilter f (x::xs) = if f x then ...`):
+  The `if` expression constrains f's return type to Bool, but with the
+  IBindVar path, f's codomain is a rigid type variable that can't be
+  unified with the concrete type Bool.
+
+- **Multiple HOF args with arity > 1**: The Implicit path hits Pi-scoped
+  codomain issues for arity > 1, and the IBindVar path can't unify
+  across different HOF args. Would need shared type variables.
 
 ## Stage 3: IDE Integration
 
