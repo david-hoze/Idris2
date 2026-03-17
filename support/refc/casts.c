@@ -121,7 +121,7 @@ Value *idris2_cast_String_to_Bits32(Value *input) {
 
 Value *idris2_cast_String_to_Bits64(Value *input) {
   Value_String *from = (Value_String *)input;
-  return (Value *)idris2_mkBits64((uint64_t)atoi(from->str));
+  return (Value *)idris2_mkBits64((uint64_t)strtoull(from->str, NULL, 10));
 }
 
 Value *idris2_cast_String_to_Int8(Value *input) {
@@ -141,7 +141,7 @@ Value *idris2_cast_String_to_Int32(Value *input) {
 
 Value *idris2_cast_String_to_Int64(Value *input) {
   Value_String *from = (Value_String *)input;
-  return (Value *)idris2_mkInt64((int64_t)atoi(from->str));
+  return (Value *)idris2_mkInt64((int64_t)strtoll(from->str, NULL, 10));
 }
 
 Value *idris2_cast_String_to_Integer(Value *input) {

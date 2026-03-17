@@ -213,7 +213,7 @@ Value *System_Concurrency_Raw_prim__conditionSignal(Value *_condition,
 // prim__conditionBroadcast : Condition -> PrimIO ()
 // using int pthread_cond_broadcast(pthread_cond_t *cond)
 Value *System_Concurrency_Raw_prim__conditionBroadcast(Value *_condition,
-                                                       Value *_mutex) {
+                                                       Value *_world) {
   Value_Condition *cond = (Value_Condition *)_condition;
   int r = pthread_cond_broadcast(cond->cond);
   IDRIS2_REFC_VERIFY(!r, "pthread_cond_broadcast failed: %s", strerror(r));

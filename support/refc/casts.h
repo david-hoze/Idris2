@@ -100,7 +100,7 @@ Value *idris2_cast_Int64_to_string(Value *);
   (idris2_mkInt64((int64_t)idris2_vp_to_Double(x)))
 Value *idris2_cast_Double_to_Integer(Value *);
 #define idris2_cast_Double_to_Char(x)                                          \
-  (idris2_mkChar((unsigned char)idris2_vp_to_Double))
+  (idris2_mkChar((unsigned char)idris2_vp_to_Double(x)))
 Value *idris2_cast_Double_to_string(Value *);
 
 #define idris2_cast_Char_to_Bits8(x)                                           \

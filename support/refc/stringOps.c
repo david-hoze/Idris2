@@ -2,13 +2,13 @@
 #include "refc_util.h"
 
 Value *tail(Value *input) {
-  Value_String *tailStr = IDRIS2_NEW_VALUE(Value_String);
-  tailStr->header.tag = STRING_TAG;
   Value_String *s = (Value_String *)input;
   int l = strlen(s->str);
   if (l == 0)
     return (Value *)&idris2_predefined_nullstring;
 
+  Value_String *tailStr = IDRIS2_NEW_VALUE(Value_String);
+  tailStr->header.tag = STRING_TAG;
   tailStr->str = malloc(l);
   IDRIS2_REFC_VERIFY(tailStr->str, "malloc failed");
   memset(tailStr->str, 0, l);

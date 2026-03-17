@@ -291,6 +291,20 @@ void idris2_removeReference(Value *elem) {
       break;
     }
 
+    case MUTEX_TAG: {
+      Value_Mutex *m = (Value_Mutex *)elem;
+      pthread_mutex_destroy(m->mutex);
+      free(m->mutex);
+      break;
+    }
+
+    case CONDITION_TAG: {
+      Value_Condition *c = (Value_Condition *)elem;
+      pthread_cond_destroy(c->cond);
+      free(c->cond);
+      break;
+    }
+
     default:
       break;
     }
