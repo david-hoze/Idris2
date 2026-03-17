@@ -91,12 +91,7 @@ Value_Closure *idris2_mkClosure(Value *(*f)(), uint8_t arity, uint8_t filled) {
   return retVal; // caller must initialize args[].
 }
 
-Value *idris2_mkDouble(double d) {
-  Value_Double *retVal = IDRIS2_NEW_VALUE(Value_Double);
-  retVal->header.tag = DOUBLE_TAG;
-  retVal->d = d;
-  return (Value *)retVal;
-}
+/* idris2_mkDouble is now static inline in memoryManagement.h */
 
 Value *idris2_mkBits32_Boxed(uint32_t i) {
   Value_Bits32 *retVal = IDRIS2_NEW_VALUE(Value_Bits32);

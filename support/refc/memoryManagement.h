@@ -11,7 +11,18 @@ void idris2_removeReference(Value *source);
 Value_Constructor *idris2_newConstructor(int total, int tag);
 Value_Closure *idris2_mkClosure(Value *(*f)(), uint8_t arity, uint8_t filled);
 
-Value *idris2_mkDouble(double d);
+static inline Value *idris2_mkDouble(double d) {
+  if (sizeof(uintptr_t) >= 8 && sizeof(double) <= sizeof(uintptr_t)) {
+    union { double dd; uintptr_t u; } conv;
+    conv.dd = d;
+    return (Value*)((conv.u & ~(uintptr_t)3) | 2);
+  } else {
+    Value_Double *retVal = IDRIS2_NEW_VALUE(Value_Double);
+    retVal->header.tag = DOUBLE_TAG;
+    retVal->d = d;
+    return (Value *)retVal;
+  }
+}
 #define idris2_mkChar(x)                                                       \
   ((Value *)(((uintptr_t)(x) << idris2_vp_int_shift) + 1))
 #define idris2_mkBits8(x)                                                      \

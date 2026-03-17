@@ -99,7 +99,7 @@ actually an Int. But places like newReference/removeReference require this flag.
 #define idris2_vp_to_Int8(p) ((int8_t)((uintptr_t)(p) >> idris2_vp_int_shift))
 #define idris2_vp_to_Char(p)                                                   \
   ((unsigned char)((uintptr_t)(p) >> idris2_vp_int_shift))
-#define idris2_vp_to_Double(p) (((Value_Double *)(p))->d)
+/* idris2_vp_to_Double defined after Value_Double struct below */
 #define idris2_vp_to_Bool(p) (idris2_vp_to_Int8(p))
 
 typedef struct {
@@ -131,6 +131,15 @@ typedef struct {
   Value_header header;
   double d;
 } Value_Double;
+
+static inline double idris2_vp_to_Double(Value *p) {
+  if (sizeof(uintptr_t) >= 8 && idris2_vp_is_unboxed(p)) {
+    union { uintptr_t u; double d; } conv;
+    conv.u = (uintptr_t)p & ~(uintptr_t)3;
+    return conv.d;
+  }
+  return ((Value_Double *)p)->d;
+}
 
 typedef struct {
   Value_header header;
