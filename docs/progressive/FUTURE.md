@@ -86,6 +86,25 @@ parsed and discarded in `definition` in `Parser.idr` via
 `ignore $ optional (exactIdent "def")`. Pure syntactic sugar — the TTImp output
 is identical.
 
+## ~~Stage 3, Task 3: Stress Tests + Final Verification~~ (DONE)
+
+Stress tests validate scaling and annotation monotonicity at scale:
+- 20-function unannotated chains (~3.5s compile)
+- 20-function mixed-annotation chains (~2.8s compile)
+- 10-level nested let bindings (~1.7s compile)
+- 20-function monotonicity (v0/v1/v2 produce identical output, ~3s each)
+
+Full suite: 103/103 progressive tests, 795/795 upstream tests, zero regressions.
+
+## ~~Stage 3, Task 4: Position Paper Update~~ (DONE)
+
+Updated `progressive-dependent-types-revised.md` from position paper to systems
+paper with empirical evidence:
+- §5.1, §5.4, §5.5: Added implementation notes on solved open problems
+- §6.1 "Implementation Results": New subsection with implementation summary
+  (~2,000 lines, 10 files, 103 tests), feature list (10 features), and
+  empirical validation (annotation monotonicity, stress tests, 4 known limitations)
+
 ## Stage 3: IDE Integration
 
 ### LSP Inferred Type Hover

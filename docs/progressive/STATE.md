@@ -15,8 +15,9 @@ beginner-friendly error messages.
 | [TESTS.md](TESTS.md)      | Full test results — 103/103 passing                |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Compiler pipeline, implementation details |
 | [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) | What still needs annotations    |
-| [FUTURE.md](FUTURE.md)    | Stage 2+ plans (HOF inference, IDE, etc.)        |
+| [FUTURE.md](FUTURE.md)    | Stage 2–3 completed work + future plans (IDE, etc.) |
 | [tutorial/](tutorial/)     | 4-stage tutorial demonstrating progressive workflow |
+| progressive-dependent-types-revised.md | Position paper with implementation results (§6.1) |
 
 ## Quick Summary
 
