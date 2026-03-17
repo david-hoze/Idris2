@@ -388,7 +388,19 @@ const2Integer c i =
         (B64 x) => "UINT64_C(\{show x})"
         _ => show i
 
-data TailPositionStatus = InTailPosition | NotInTailPosition
+data TailPositionStatus = InTailPosition | InSelfTailPosition Name (List Int) | NotInTailPosition
+
+||| Check if an ANF expression contains a self-tail-call to the given function name.
+hasSelfTailCall : Name -> ANF -> Bool
+hasSelfTailCall fn (AAppName _ _ n _) = fn == n
+hasSelfTailCall fn (ALet _ _ _ body) = hasSelfTailCall fn body
+hasSelfTailCall fn (AConCase _ _ alts def) =
+    any (\(MkAConAlt _ _ _ _ body) => hasSelfTailCall fn body) alts
+    || maybe False (hasSelfTailCall fn) def
+hasSelfTailCall fn (AConstCase _ _ alts def) =
+    any (\(MkAConstAlt _ body) => hasSelfTailCall fn body) alts
+    || maybe False (hasSelfTailCall fn) def
+hasSelfTailCall _ _ = False
 
 ||| The function takes as arguments the current ReuseMap and the constructors that will be used.
 ||| Returns constructor variables to remove and constructors to reuse.
@@ -446,6 +458,31 @@ addReuseConstructor reuseMap sc conName conArgs consts shouldDrop actualReuseCon
         dupVars $ conArgs \\ shouldDrop
         pure (shouldDrop \\ conArgs, actualReuseConsts)
 
+||| Evaluate self-tail-call arguments into temporaries, consuming ownership.
+||| Returns (temp var names, remaining owned set after consumption).
+emitSelfTailCallArgs : {auto oft : Ref OutfileText Output}
+                     -> {auto il : Ref IndentLevel Nat}
+                     -> Owned -> List AVar -> Nat -> Core (List String, Owned)
+emitSelfTailCallArgs owned [] _ = pure ([], owned)
+emitSelfTailCallArgs owned (v :: vs) i = do
+    let tempName = "__stc_" ++ show i
+    let (valExpr, owned') = if contains v owned
+          then (varName v, delete v owned)
+          else ("idris2_newReference(" ++ varName v ++ ")", owned)
+    emit EmptyFC "Value *\{tempName} = \{valExpr};"
+    (rest, owned'') <- emitSelfTailCallArgs owned' vs (S i)
+    pure (tempName :: rest, owned'')
+
+||| Reassign function parameter variables from temporaries.
+emitParamReassign : {auto oft : Ref OutfileText Output}
+                  -> {auto il : Ref IndentLevel Nat}
+                  -> List Int -> List String -> Core ()
+emitParamReassign [] _ = pure ()
+emitParamReassign _ [] = pure ()
+emitParamReassign (i :: is) (t :: ts) = do
+    emit EmptyFC "var_\{show i} = \{t};"
+    emitParamReassign is ts
+
 mutual
     concaseBody : {auto a : Ref ArgCounter Nat}
                  -> {auto e : Ref EnvTracker Env}
@@ -483,6 +520,16 @@ mutual
     cStatementsFromANF (AAppName fc _ n args) tailPosition = do
         let nargs = length args
         case tailPosition of
+            InSelfTailPosition encName funcArgIdxs =>
+                if n == encName then do
+                    env <- get EnvTracker
+                    (temps, owned') <- emitSelfTailCallArgs env.owned args 0
+                    let paramsToFree = filter (\v => contains v owned') (map ALocal funcArgIdxs)
+                    removeVars (map varName paramsToFree)
+                    emitParamReassign funcArgIdxs temps
+                    emit fc "continue;"
+                    pure "NULL /* unreachable, continue above */"
+                else makeClosure fc n args 0
             InTailPosition => makeClosure fc n args 0
             _ => if nargs > MaxExtractFunArgs
                 then pure "idris2_trampoline(\{!(makeClosure fc n args 0)})"
@@ -495,8 +542,8 @@ mutual
     cStatementsFromANF (AApp fc _ closure arg) tailPosition = do
        env <- get EnvTracker
        pure $ (case tailPosition of
-           NotInTailPosition =>          "idris2_apply_closure"
-           InTailPosition    => "idris2_tailcall_apply_closure") ++ "(\{avarToC env closure}, \{avarToC env arg})"
+           NotInTailPosition => "idris2_apply_closure"
+           _                 => "idris2_tailcall_apply_closure") ++ "(\{avarToC env closure}, \{avarToC env arg})"
 
     cStatementsFromANF (ALet fc var value body) tailPosition = do
         env <- get EnvTracker
@@ -827,9 +874,20 @@ createCFunctions n (MkAFun args anf) = do
          emit EmptyFC "Value *var_\{show j} = var_arglist[\{show i}];"
          pure $ i + 1) 0 args
       pure ()
-    removeVars (varName <$> Prelude.toList shouldDrop)
-    _ <- newRef EnvTracker (MkEnv bodyFreeVars empty)
-    emit EmptyFC $ "return \{!(cStatementsFromANF anf InTailPosition)};"
+    if hasSelfTailCall n anf
+       then do
+        emit EmptyFC "while(1) {"
+        increaseIndentation
+        removeVars (varName <$> Prelude.toList shouldDrop)
+        _ <- newRef EnvTracker (MkEnv bodyFreeVars empty)
+        emit EmptyFC "Value *__result = \{!(cStatementsFromANF anf (InSelfTailPosition n args))};"
+        emit EmptyFC "return __result;"
+        decreaseIndentation
+        emit EmptyFC "}"
+       else do
+        removeVars (varName <$> Prelude.toList shouldDrop)
+        _ <- newRef EnvTracker (MkEnv bodyFreeVars empty)
+        emit EmptyFC "return \{!(cStatementsFromANF anf InTailPosition)};"
     decreaseIndentation
     emit EmptyFC  "}\n"
     emit EmptyFC  ""
