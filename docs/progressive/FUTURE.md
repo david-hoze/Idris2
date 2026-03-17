@@ -105,33 +105,16 @@ paper with empirical evidence:
   (~2,000 lines, 10 files, 103 tests), feature list (10 features), and
   empirical validation (annotation monotonicity, stress tests, 4 known limitations)
 
-## Stage 3: IDE Integration
+## ~~Stage 3, Task 5: LSP / IDE Mode Specification~~ (DONE)
 
-### LSP Inferred Type Hover
+Created `docs/progressive/LSP_SPEC.md` specifying four IDE features:
+1. **Hover**: `(inferred)` prefix for synthesised types via `SynthesisedType` flag
+2. **Code action**: "Add type signature" using existing `:addtype` REPL backing
+3. **Diagnostic severity**: Holes in progressive code as warnings, not errors
+4. **Inlay hints** (future): Ghost text showing inferred types
 
-When hovering over an unannotated function name, the IDE should show:
-```
-(inferred) add : Integer -> Integer -> Integer
-```
-
-The "(inferred)" prefix distinguishes inferred types from declared types.
-Look at `src/Idris/IDEMode/` for the current type-on-hover mechanism.
-
-### LSP "Add Type Signature" Code Action
-
-A code action (quick fix) that inserts the inferred type signature above
-an unannotated definition:
-
-```idris
--- Before:
-add x y = x + y
-
--- After clicking "Add inferred type signature":
-add : Integer -> Integer -> Integer
-add x y = x + y
-```
-
-The `:addtype` REPL command (already implemented) provides the backing logic.
+The spec covers both compiler-side IDE protocol changes and LSP-side handlers,
+with example JSON request/response for each feature. See LSP_SPEC.md for details.
 
 ## Stage 4: Advanced Features
 
