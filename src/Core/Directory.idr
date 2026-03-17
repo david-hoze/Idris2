@@ -142,7 +142,12 @@ firstAvailable [] = pure Nothing
 firstAvailable (f :: fs)
     = do log "import.file" 30 $ "Attempting to read " ++ f
          Right ok <- coreLift $ openFile f Read
-               | Left err => firstAvailable fs
+               | Left err => do
+                   -- Also check if it's a directory (e.g. support/refc)
+                   Right dir <- coreLift $ openDir f
+                     | Left _ => firstAvailable fs
+                   coreLift $ closeDir dir
+                   pure (Just f)
          coreLift $ closeFile ok
          pure (Just f)
 
