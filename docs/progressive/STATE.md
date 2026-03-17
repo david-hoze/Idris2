@@ -18,6 +18,7 @@ beginner-friendly error messages.
 | [FUTURE.md](FUTURE.md)    | Stage 2–3 completed work + future plans (IDE, etc.) |
 | [tutorial/](tutorial/)     | 4-stage tutorial demonstrating progressive workflow |
 | [LSP_SPEC.md](LSP_SPEC.md) | LSP / IDE mode specification for progressive features |
+| [REFC_OPTIMIZATION.md](REFC_OPTIMIZATION.md) | RefC backend optimization analysis |
 | progressive-dependent-types-revised.md | Position paper with implementation results (§6.1) |
 
 ## Quick Summary
