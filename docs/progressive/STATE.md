@@ -1,6 +1,6 @@
 # Progressive Idris — Stage 1
 
-**Status**: Complete. 96/96 progressive tests passing, zero upstream regressions.
+**Status**: Complete. 103/103 progressive tests passing, zero upstream regressions.
 
 Progressive Idris lets you write Idris 2 code without type annotations and
 add them gradually. The compiler infers types for unannotated functions,
@@ -12,7 +12,7 @@ beginner-friendly error messages.
 | Document                   | Contents                                       |
 |----------------------------|-------------------------------------------------|
 | [GUIDE.md](GUIDE.md)      | User guide for the progressive workflow          |
-| [TESTS.md](TESTS.md)      | Full test results — 96/96 passing                |
+| [TESTS.md](TESTS.md)      | Full test results — 103/103 passing                |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Compiler pipeline, implementation details |
 | [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) | What still needs annotations    |
 | [FUTURE.md](FUTURE.md)    | Stage 2+ plans (HOF inference, IDE, etc.)        |
@@ -31,6 +31,8 @@ beginner-friendly error messages.
 - Where-clause pattern matching with unannotated parents
 - Ambiguous constructor resolution (pair, list patterns)
 - Multiplicity inference from usage (linear propagation from callees)
+- Effect/totality: IO propagation, `%default total`, partial default
+- `def` keyword as optional syntax for unannotated definitions
 - Typed holes in unannotated functions
 - REPL auto-display of inferred types + `:addtype` command
 
@@ -57,7 +59,7 @@ source files and their roles.
 # Build compiler
 bash scripts/rebuild.sh
 
-# Run progressive tests (96/96)
+# Run progressive tests (103/103)
 bash tests/progressive/run_tests.sh
 
 # Run full upstream test suite (795/795, zero regressions)

@@ -69,6 +69,23 @@ to linear and runs `linearCheck` on normalised clause RHSes. Variables used only
 once in linear-compatible positions get Rig1; variables used multiple times or in
 unrestricted positions (e.g., inside List `(::)`) stay RigW. See ARCHITECTURE.md.
 
+## ~~Stage 3, Task 2: Effect/Totality + `def` Keyword~~ (DONE)
+
+**Effect/totality**: Idris 2's existing totality checking is orthogonal to
+type inference. IO propagates from callees, `%default total` works at module
+level, and partial functions compile without error by default. No
+progressive-specific changes needed.
+
+**Limitation**: `total foo x = x` (totality keyword before a bare definition
+without a type signature) is not supported by the parser. Use `%default total`
+at the module level or add a type signature. This is a standard Idris 2 parser
+limitation, not progressive-specific.
+
+**`def` keyword**: Optional `def` prefix for definitions (`def add x y = x + y`)
+parsed and discarded in `definition` in `Parser.idr` via
+`ignore $ optional (exactIdent "def")`. Pure syntactic sugar — the TTImp output
+is identical.
+
 ## Stage 3: IDE Integration
 
 ### LSP Inferred Type Hover

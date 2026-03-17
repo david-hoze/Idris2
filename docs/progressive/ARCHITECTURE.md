@@ -206,6 +206,12 @@ declarations. After processing, it scans new context entries for
 `:addtype name` displays the type signature without module prefix, ready
 to paste into source code.
 
+## `def` Keyword Syntax
+
+The `definition` parser in `Parser.idr` accepts an optional `def` prefix
+via `ignore $ optional (exactIdent "def")`. This is pure syntactic sugar:
+`def add x y = x + y` desugars identically to `add x y = x + y`.
+
 ## Files Modified
 
 ### Core compiler
@@ -224,7 +230,7 @@ to paste into source code.
 - `src/Idris/Error.idr` — beginner-friendly error messages for progressive modules
 - `src/Idris/REPL.idr` — auto-display inferred types, `:addtype` command
 - `src/Idris/Syntax.idr` — `AddType` REPLCmd constructor
-- `src/Idris/Parser.idr` — `:addtype` parser entry
+- `src/Idris/Parser.idr` — `:addtype` parser entry, `def` keyword syntax
 
 ## Technical Debt
 

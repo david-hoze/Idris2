@@ -1,6 +1,6 @@
 # Progressive Idris — Test Results
 
-**96/96 progressive tests passing. 795/795 upstream tests, zero regressions.**
+**103/103 progressive tests passing. 795/795 upstream tests, zero regressions.**
 
 ## Block 1: Type Synthesis (16/16)
 
@@ -144,6 +144,23 @@ MaybeMisspelling.
 | mult003   | PASS   | `wrapLinear x = linearId x`       | Linear propagation from polymorphic callee  |
 | mult004   | PASS   | `cat x y = unwords [x, show y]`   | Unrestricted: used once but in RigW position|
 | mult005   | PASS   | `useOnce` in linear context        | Inferred linear, callable from linear ctx   |
+
+## Stage 3: Effect/Totality (4/4)
+
+| Test      | Status | Description                        | Notes                                      |
+|-----------|--------|------------------------------------|---------------------------------------------|
+| effect001 | PASS   | `greet name = putStrLn ...`        | IO effect propagates from callee             |
+| effect002 | PASS   | `double x = x + x`                | Pure function, no effect needed              |
+| effect003 | PASS   | `%default total; safeAdd x y = ...`| Totality via module-level directive          |
+| effect004 | PASS   | `loop 0 = 0; loop n = loop (n-1)` | Partial by default, no totality error        |
+
+## Stage 3: `def` Keyword Syntax (3/3)
+
+| Test      | Status | Description                        | Notes                                      |
+|-----------|--------|------------------------------------|---------------------------------------------|
+| syntax001 | PASS   | `def add x y = x + y`             | Basic def keyword                            |
+| syntax002 | PASS   | `def double` + annotated caller    | Mixing def and annotated functions           |
+| syntax003 | PASS   | `def myNot True = False; ...`      | def with multi-clause pattern matching       |
 
 ## Full Idris 2 Test Suite
 

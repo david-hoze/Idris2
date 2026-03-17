@@ -1885,7 +1885,8 @@ parameters {auto fname : OriginDesc} {auto indents : IndentInfo}
 
   definition : Rule PDeclNoFC
   definition
-      = do nd <- clause 0 Nothing fname indents
+      = do ignore $ optional (exactIdent "def")
+           nd <- clause 0 Nothing fname indents
            pure (PDef (singleton nd))
 
   operatorBindingKeyword : EmptyRule BindingModifier
