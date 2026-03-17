@@ -413,7 +413,8 @@ dropUnusedReuseCons reuseMap usedCons =
     -- if there is no constructor named by that name, then the reuse constructor is deleted
     let dropReuseMap = differenceMap reuseMap usedCons in
     let actualReuseMap = intersectionMap reuseMap usedCons in
-    (values dropReuseMap, actualReuseMap)
+    -- Deduplicate: cross-constructor reuse may map multiple names to same C variable
+    (Prelude.toList $ the (SortedSet String) $ fromList $ values dropReuseMap, actualReuseMap)
 
 ||| The function takes as arguments the current owned vars and set vars that will be used.
 ||| Returns variables to remove and actual owned vars.
@@ -424,6 +425,7 @@ dropUnusedOwnedVars owned usedVars =
     (varName <$> Prelude.toList shouldDrop, actualOwned)
 
 -- if the constructor is unique use it, otherwise add it to should drop vars and create null constructor
+-- arityNames: constructor names used in body with same arity (for cross-constructor reuse)
 addReuseConstructor : {auto a : Ref ArgCounter Nat}
                     -> {auto oft : Ref OutfileText Output}
                     -> {auto il : Ref IndentLevel Nat}
@@ -434,12 +436,14 @@ addReuseConstructor : {auto a : Ref ArgCounter Nat}
                     -> SortedSet Name
                     -> List String
                     -> SortedMap Name String
+                    -> List Name
                     -> Core (List String, SortedMap Name String)
-addReuseConstructor reuseMap sc conName conArgs consts shouldDrop actualReuseConsts =
+addReuseConstructor reuseMap sc conName conArgs consts shouldDrop actualReuseConsts arityNames =
     -- to avoid conflicts, we check that there is no constructor with the same name in reuse map
     -- we also check that the constructor will be used later and that the variable will be deleted
+    -- Cross-constructor reuse: also trigger if arity-matched constructors exist in body
     if (isNothing $ SortedMap.lookup conName reuseMap)
-       && contains conName consts
+       && (contains conName consts || not (null arityNames))
        && (isJust $ find (== sc) shouldDrop) then do
         let constr = "constructor_" ++ !(getNextCounter)
         emit EmptyFC $ "Value_Constructor* " ++ constr ++ " = NULL;"
@@ -457,7 +461,10 @@ addReuseConstructor reuseMap sc conName conArgs consts shouldDrop actualReuseCon
         removeVars [sc]
         decreaseIndentation
         emit EmptyFC "}"
-        pure (shouldDrop \\ (sc :: conArgs), insert conName constr actualReuseConsts)
+        -- Insert reuse entry under matched name (if used in body) and all arity-matched names
+        let namesToInsert = (if contains conName consts then [conName] else []) ++ arityNames
+        let reuseEntries = foldl (\m, n => insert n constr m) actualReuseConsts namesToInsert
+        pure (shouldDrop \\ (sc :: conArgs), reuseEntries)
     else do
         dupVars $ conArgs \\ shouldDrop
         pure (shouldDrop \\ conArgs, actualReuseConsts)
@@ -574,23 +581,34 @@ mutual
                 let createNewConstructor = " = idris2_newConstructor("
                                  ++ (show (length args))
                                  ++ ", "  ++ maybe "-1" show tag  ++ ");"
+                let isReuse = isJust $ SortedMap.lookup n $ reuseMap env
 
                 emit fc " // constructor \{show n}"
                 constr <- case SortedMap.lookup n $ reuseMap env of
-                    Just constr => do
-                        emit fc "if (! \{constr}) {"
+                    Just reuseVar => do
+                        emit fc "if (! \{reuseVar}) {"
                         increaseIndentation
-                        emit fc $ constr ++ createNewConstructor
+                        emit fc $ reuseVar ++ createNewConstructor
                         decreaseIndentation
                         emit fc "}"
-                        pure constr
+                        -- Update tag and name for cross-constructor reuse correctness
+                        emit fc $ reuseVar ++ "->tag = " ++ maybe "-1" show tag ++ ";"
+                        when (Nothing == tag) $ emit fc "\{reuseVar}->name = idris2_constr_\{cName n};"
+                        pure reuseVar
                     Nothing => do
                         let constr = "constructor_\{!(getNextCounter)}"
                         emit fc $ "Value_Constructor* " ++ constr ++ createNewConstructor
                         when (Nothing == tag) $ emit fc "\{constr}->name = idris2_constr_\{cName n};"
                         pure constr
                 fillArgs env "\{constr}->args" args 0
-                pure "(Value*)\{constr}"
+                if isReuse
+                    then do
+                        -- Save result and NULL reuse var to prevent double-use
+                        resultVar <- getNewVarThatWillNotBeFreedAtEndOfBlock
+                        emit EmptyFC "Value *\{resultVar} = (Value*)\{constr};"
+                        emit EmptyFC "\{constr} = NULL;"
+                        pure resultVar
+                    else pure "(Value*)\{constr}"
 
     cStatementsFromANF (AOp fc _ op args) _ = do
         let resultVar = "primVar_" ++ !(getNextCounter)
@@ -645,7 +663,12 @@ mutual
             _ <- foldlC (\k, arg => do
                 emit emptyFC "Value *var_\{show arg} = ((Value_Constructor*)\{sc'})->args[\{show k}];"
                 pure (S k) ) 0 args
-            (shouldDrop, actualReuseMap) <- addReuseConstructor env.reuseMap sc' name (varName <$> conArgs) usedCons shouldDrop actualReuseMap
+            -- Compute arity-matched constructor names for cross-constructor reuse
+            let matchedArity = length args
+            let arityNames : List Name = Prelude.toList $ SortedSet.delete name $
+                  the (SortedSet Name) $ fromList $
+                  map fst $ filter (\p => snd p == matchedArity) (usedConstructorsWithArities body)
+            (shouldDrop, actualReuseMap) <- addReuseConstructor env.reuseMap sc' name (varName <$> conArgs) usedCons shouldDrop actualReuseMap arityNames
             removeVars shouldDrop
             removeReuseConstructors dropReuseCons
             put EnvTracker ({owned := actualOwned, reuseMap := actualReuseMap} env)

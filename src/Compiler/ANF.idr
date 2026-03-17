@@ -325,3 +325,23 @@ usedConstructors (AConstCase _ sc alts mDef) =
                 Nothing => altsAnf in
     foldMap usedConstructors anfs
 usedConstructors _ = empty
+
+export
+usedConstructorsWithArities : ANF -> List (Name, Nat)
+usedConstructorsWithArities (ACon _ n _ _ args) = [(n, length args)]
+usedConstructorsWithArities (ALet _ var value body) =
+    usedConstructorsWithArities value ++ usedConstructorsWithArities body
+usedConstructorsWithArities (AConCase _ sc alts mDef) =
+    let altsAnf =
+        map (\(MkAConAlt _ _ _ args caseBody) => usedConstructorsWithArities caseBody) alts in
+    let anfs : List (List (Name, Nat)) = case mDef of
+                Just anf => usedConstructorsWithArities anf :: altsAnf
+                Nothing => altsAnf in
+    concat anfs
+usedConstructorsWithArities (AConstCase _ sc alts mDef) =
+    let altsAnf = map (\(MkAConstAlt _ caseBody) => caseBody) alts in
+    let anfs : List ANF = case mDef of
+                Just anf => anf :: altsAnf
+                Nothing => altsAnf in
+    foldMap usedConstructorsWithArities anfs
+usedConstructorsWithArities _ = []
