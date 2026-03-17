@@ -402,6 +402,10 @@ hasSelfTailCall fn (AConstCase _ _ alts def) =
     || maybe False (hasSelfTailCall fn) def
 hasSelfTailCall _ _ = False
 
+isEnum : ConInfo -> Bool
+isEnum (ENUM _) = True
+isEnum _ = False
+
 ||| The function takes as arguments the current ReuseMap and the constructors that will be used.
 ||| Returns constructor variables to remove and constructors to reuse.
 dropUnusedReuseCons : ReuseMap -> SortedSet Name -> (List String, ReuseMap)
@@ -560,9 +564,12 @@ mutual
         cStatementsFromANF body tailPosition
 
     cStatementsFromANF (ACon fc n coninfo tag args) _ = do
-        if coninfo == NIL || coninfo == NOTHING || coninfo == ZERO || coninfo == UNIT
-            then pure "(NULL /* \{show n} */)"
-            else do
+        let nullCon = coninfo == NIL || coninfo == NOTHING || coninfo == ZERO || coninfo == UNIT
+        if nullCon then pure "(NULL /* \{show n} */)"
+         else if isEnum coninfo
+           then pure $ maybe "(NULL /* \{show n} */)"
+                  (\t => "(Value*)(((uintptr_t)\{show t} << idris2_vp_int_shift) | 1) /* \{show n} */") tag
+         else do
                 env <- get EnvTracker
                 let createNewConstructor = " = idris2_newConstructor("
                                  ++ (show (length args))
@@ -620,13 +627,17 @@ mutual
             if erased then emit emptyFC "\{els}if (NULL == \{sc'} /* \{show name} \{show coninfo} */) {"
                 else if coninfo == CONS || coninfo == JUST || coninfo == SUCC
                 then emit emptyFC "\{els}if (NULL != \{sc'} /* \{show name} \{show coninfo} */) {"
+                else if isEnum coninfo
+                then case tag of
+                    Just tag' => emit emptyFC "\{els}if (((uintptr_t)\{sc'} >> idris2_vp_int_shift) == \{show tag'} /* \{show name} */) {"
+                    Nothing   => emit emptyFC "\{els}if (0 /* \{show name} ENUM no tag */) {"
                 else do
                     case tag of
                         Nothing   => emit emptyFC "\{els}if (! strcmp(((Value_Constructor *)\{sc'})->name, idris2_constr_\{cName name})) {"
                         Just tag' => emit emptyFC "\{els}if (((Value_Constructor *)\{sc'})->tag == \{show tag'} /* \{show name} */) {"
 
             let conArgs = ALocal <$> args
-            let ownedWithArgs = union (fromList conArgs) $ if erased then delete sc env.owned else env.owned
+            let ownedWithArgs = union (fromList conArgs) $ if erased || isEnum coninfo then delete sc env.owned else env.owned
             let (shouldDrop, actualOwned) = dropUnusedOwnedVars ownedWithArgs (freeVariables body)
             let usedCons = usedConstructors body
             let (dropReuseCons, actualReuseMap) = dropUnusedReuseCons env.reuseMap usedCons
