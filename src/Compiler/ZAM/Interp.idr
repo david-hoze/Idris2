@@ -252,7 +252,7 @@ doPrim2 : (ZValue -> ZValue -> IO ZValue) -> ZState -> ZState -> IO (Either Stri
 doPrim2 f st next =
   case st.argStack of
     (a :: b :: rest) => do
-      result <- f b a
+      result <- f a b
       pure (Right ({ accu := result, argStack := rest } next))
     _ => pure (Left "PRIM: not enough args (need 2)")
 
@@ -260,7 +260,7 @@ doPrim3 : (ZValue -> ZValue -> ZValue -> IO ZValue) -> ZState -> ZState -> IO (E
 doPrim3 f st next =
   case st.argStack of
     (a :: b :: c :: rest) => do
-      result <- f c b a
+      result <- f a b c
       pure (Right ({ accu := result, argStack := rest } next))
     _ => pure (Left "PRIM: not enough args (need 3)")
 
@@ -340,12 +340,20 @@ step st = do
         (arg :: rest) =>
           pure (Right ({ env := st.env ++ [arg], argStack := rest } next))
         [] =>
-          -- Check for mark (partial application)
+          -- Partial application: create closure and return to caller
+          let closure = VClosure (st.pc - 1) st.env [] in
           case st.retStack of
+            (RetFrame retpc retenv :: MarkFrame :: retRest) =>
+              -- APPLY context: RetFrame above MarkFrame
+              pure (Right ({ accu := closure, pc := retpc, env := retenv,
+                            retStack := retRest } st))
+            (MarkFrame :: RetFrame retpc retenv :: retRest) =>
+              -- TAILAPPLY context: MarkFrame then RetFrame
+              pure (Right ({ accu := closure, pc := retpc, env := retenv,
+                            retStack := retRest } st))
             (MarkFrame :: retRest) =>
-              -- Return partial closure
-              pure (Right ({ accu := VClosure (st.pc - 1) st.env [],
-                            retStack := retRest } next))
+              -- Mark without RetFrame (top-level apply): just set accu
+              pure (Right ({ accu := closure, retStack := retRest } st))
             _ => pure (Left "GRAB: empty arg stack and no mark")
 
     CLOSURE lab sz =>
@@ -376,8 +384,8 @@ step st = do
           pure (Right ({ pc := retpc, env := retenv,
                         retStack := rest } st))
         (MarkFrame :: rest) =>
-          -- Return from a partial application context
-          pure (Right ({ retStack := rest } next))
+          -- Skip leftover MarkFrame from APPLY context, re-execute RETURN
+          pure (Right ({ retStack := rest } st))
         [] => pure (Left "RETURN: empty return stack")
 
     PUSHMARK =>
@@ -393,7 +401,7 @@ step st = do
     MAKEBLOCK tag arity => do
       case popN arity st.argStack of
         Just (fields, rest) =>
-          pure (Right ({ accu := VCon (Left tag) (reverse fields),
+          pure (Right ({ accu := VCon (Left tag) fields,
                         argStack := rest } next))
         Nothing =>
           pure (Left ("MAKEBLOCK: not enough args on stack for arity " ++ show arity))
@@ -401,7 +409,7 @@ step st = do
     MAKEBLOCKNAME n arity => do
       case popN arity st.argStack of
         Just (fields, rest) =>
-          pure (Right ({ accu := VCon (Right n) (reverse fields),
+          pure (Right ({ accu := VCon (Right n) fields,
                         argStack := rest } next))
         Nothing =>
           pure (Left ("MAKEBLOCKNAME: not enough args on stack for arity " ++ show arity))
@@ -460,7 +468,7 @@ step st = do
     EXTPRIM n nargs => do
       case popN nargs st.argStack of
         Just (args, rest) => do
-          result <- execExtPrim n (reverse args)
+          result <- execExtPrim n args
           pure (Right ({ accu := result, argStack := rest } next))
         Nothing => pure (Left ("EXTPRIM: not enough args for " ++ show n))
 

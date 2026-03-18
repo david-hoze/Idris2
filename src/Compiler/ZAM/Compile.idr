@@ -96,7 +96,7 @@ compileConstCase : {auto st : Ref CState CompileState}
 compileConstCaseTail : {auto st : Ref CState CompileState}
                     -> VarMap -> Nat -> AVar -> List AConstAlt -> Maybe ANF -> Core ()
 
--- Push arguments onto the stack (right-to-left for push-enter convention)
+-- Push arguments onto the stack (right-to-left so GRAB appends in correct order)
 pushArgs : {auto st : Ref CState CompileState} -> VarMap -> List AVar -> Core ()
 pushArgs vm args = traverse_ (\a => do compileVar vm a; emit PUSH) (reverse args)
 
@@ -111,8 +111,6 @@ compileExpr vm depth (AAppName fc _ n args) = do
   case mlab of
     Just lab => do
       pushArgs vm args
-      afterCall <- here
-      emit (PUSHRETADDR (afterCall + 2))  -- will be patched
       emit (CALL lab (length args))
     Nothing => do
       -- Unknown function: build closure and apply args
@@ -282,6 +280,15 @@ measureAlts vm depth compileBody (alt :: alts) = do
   rest <- measureAlts vm depth compileBody alts
   pure (sz :: rest)
 
+||| Measure the size of each alt body (tail position, no JUMP).
+measureAltsTail : {auto st : Ref CState CompileState}
+              -> VarMap -> Nat -> (AConAlt -> Core ()) -> List AConAlt -> Core (List Int)
+measureAltsTail vm depth compileBody [] = pure []
+measureAltsTail vm depth compileBody (alt :: alts) = do
+  sz <- measureCode (compileBody alt)
+  rest <- measureAltsTail vm depth compileBody alts
+  pure (sz :: rest)
+
 ||| Get the constructor tag from an AConAlt.
 altTag : AConAlt -> Either Int Name
 altTag (MkAConAlt _ _ (Just tag) _ _) = Left tag
@@ -327,7 +334,7 @@ compileConCase vm depth scr alts def = do
 
 compileConCaseTail vm depth scr alts def = do
   let compBody = compileAltBodyTail vm depth
-  sizes <- measureAlts vm depth compBody alts
+  sizes <- measureAltsTail vm depth compBody alts
   switchPos <- here
   let altPositions = computePositions (switchPos + 1) sizes
   let afterAlts = switchPos + 1 + totalSize sizes
@@ -398,8 +405,8 @@ compileFun n (MkAForeign ccs fargs ret) = do
   -- Foreign functions: GRAB all args, then call EXTPRIM
   let nargs = length fargs
   emitAll (replicate nargs GRAB)
-  -- Push env args onto stack for EXTPRIM (ACCESS i, PUSH for each)
-  emitAll (concatMap (\i => [ACCESS (cast i), PUSH]) [0 .. cast nargs - 1])
+  -- Push env args in reverse order so popN yields correct arg order
+  emitAll (concatMap (\i => [ACCESS (cast i), PUSH]) (reverse [0 .. cast nargs - 1]))
   emit (EXTPRIM n nargs)
   emit RETURN
 
