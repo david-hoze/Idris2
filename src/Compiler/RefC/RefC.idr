@@ -7,7 +7,10 @@ import Compiler.CompileExpr
 import Compiler.ANF
 import Compiler.Generated
 
+import Algebra
+import Core.Context
 import Core.Directory
+import Libraries.Data.NatSet
 
 import Idris.Syntax
 
@@ -212,10 +215,14 @@ Owned = SortedSet AVar
 ||| If variable borrowed (that is, it is not in the owned set) when used, call a function idris2_newReference.
 ||| If variable owned, then use it directly.
 ||| Reuse Map contains the name of the reusable constructor and variable
+||| linearVars tracks Rig1 (linear) function parameters: these are used exactly
+||| once, so they never need newReference (no aliasing) or removeReference
+||| (consumption IS the single use). This is the QTT-informed optimization.
 record Env where
   constructor MkEnv
   owned : Owned
   reuseMap : ReuseMap
+  linearVars : SortedSet AVar
 
 ------------------------------------------------------------------------
 -- Output generation: using a difference list for efficient append
@@ -303,19 +310,56 @@ removeReuseConstructors : {auto oft : Ref OutfileText Output}
                         -> Core ()
 removeReuseConstructors = applyFunctionToVars "idris2_removeReuseConstructor"
 
+||| Extract RigCount of each Pi-bound argument from a function type.
+piMults : Term vars -> List RigCount
+piMults (Bind _ _ (Pi _ rig _ _) sc) = rig :: piMults sc
+piMults _ = []
+
+||| Remove elements at erased argument positions from a list.
+dropErased : NatSet -> List a -> List a
+dropErased epos xs = go 0 xs
+  where
+    go : Nat -> List a -> List a
+    go _ [] = []
+    go i (x :: rest) =
+      if NatSet.elem i epos
+         then go (S i) rest
+         else x :: go (S i) rest
+
+||| Compute the set of Rig1 (linear) argument variables for a function.
+||| Looks up the function's type from the context, extracts Pi multiplicities,
+||| drops erased argument positions, and identifies which remaining args are linear.
+getLinearArgSet : {auto c : Ref Ctxt Defs} -> Name -> List Int -> Core (SortedSet AVar)
+getLinearArgSet n args = do
+    defs <- get Ctxt
+    Just gdef <- lookupCtxtExact n (gamma defs)
+      | Nothing => pure SortedSet.empty
+    let mults = dropErased (eraseArgs gdef) (piMults (type gdef))
+    pure $ go args mults
+  where
+    go : List Int -> List RigCount -> SortedSet AVar
+    go [] _ = SortedSet.empty
+    go _ [] = SortedSet.empty
+    go (a :: as) (r :: rs) =
+      let rest = go as rs in
+      if isLinear r then SortedSet.insert (ALocal a) rest else rest
+
 avarToC : Env -> AVar -> String
 avarToC env var =
-    if contains var env.owned then varName var
-        -- case when the variable is borrowed
+    if contains var env.owned || contains var env.linearVars
+       then varName var
+        -- case when the variable is borrowed (and not linear)
     else "idris2_newReference(" ++ varName var ++ ")"
 
-avarsToC : Owned -> List AVar -> List String
-avarsToC _ [] = []
-avarsToC owned (v::vars) =
+avarsToC : Owned -> SortedSet AVar -> List AVar -> List String
+avarsToC _ _ [] = []
+avarsToC owned linear (v::vars) =
   let v' = varName v in
       if contains v owned
-          then v'::avarsToC (delete v owned) vars
-          else "idris2_newReference(\{v'})"::avarsToC owned vars -- when v is borrowed
+          then v'::avarsToC (delete v owned) linear vars
+          else if contains v linear
+              then v'::avarsToC owned linear vars -- Rig1: always use directly
+              else "idris2_newReference(\{v'})"::avarsToC owned linear vars -- when v is borrowed
 
 moveFromOwnedToBorrowed : Env -> SortedSet AVar -> Env
 moveFromOwnedToBorrowed env vars = { owned $= (`difference` vars) } env
@@ -473,15 +517,17 @@ addReuseConstructor reuseMap sc conName conArgs consts shouldDrop actualReuseCon
 ||| Returns (temp var names, remaining owned set after consumption).
 emitSelfTailCallArgs : {auto oft : Ref OutfileText Output}
                      -> {auto il : Ref IndentLevel Nat}
-                     -> Owned -> List AVar -> Nat -> Core (List String, Owned)
-emitSelfTailCallArgs owned [] _ = pure ([], owned)
-emitSelfTailCallArgs owned (v :: vs) i = do
+                     -> Owned -> SortedSet AVar -> List AVar -> Nat -> Core (List String, Owned)
+emitSelfTailCallArgs owned _ [] _ = pure ([], owned)
+emitSelfTailCallArgs owned linear (v :: vs) i = do
     let tempName = "__stc_" ++ show i
     let (valExpr, owned') = if contains v owned
           then (varName v, delete v owned)
-          else ("idris2_newReference(" ++ varName v ++ ")", owned)
+          else if contains v linear
+              then (varName v, owned) -- Rig1: use directly, don't consume ownership
+              else ("idris2_newReference(" ++ varName v ++ ")", owned)
     emit EmptyFC "Value *\{tempName} = \{valExpr};"
-    (rest, owned'') <- emitSelfTailCallArgs owned' vs (S i)
+    (rest, owned'') <- emitSelfTailCallArgs owned' linear vs (S i)
     pure (tempName :: rest, owned'')
 
 ||| Reassign function parameter variables from temporaries.
@@ -534,7 +580,7 @@ mutual
             InSelfTailPosition encName funcArgIdxs =>
                 if n == encName then do
                     env <- get EnvTracker
-                    (temps, owned') <- emitSelfTailCallArgs env.owned args 0
+                    (temps, owned') <- emitSelfTailCallArgs env.owned env.linearVars args 0
                     let paramsToFree = filter (\v => contains v owned') (map ALocal funcArgIdxs)
                     removeVars (map varName paramsToFree)
                     emitParamReassign funcArgIdxs temps
@@ -546,7 +592,7 @@ mutual
                 then pure "idris2_trampoline(\{!(makeClosure fc n args 0)})"
                 else do
                     env <- get EnvTracker
-                    let args' = avarsToC env.owned args
+                    let args' = avarsToC env.owned env.linearVars args
                     pure "idris2_trampoline(\{cName n}(\{concat $ intersperse ", " args'}))"
 
     cStatementsFromANF (AUnderApp fc n missing args) _ = makeClosure fc n args missing
@@ -655,7 +701,7 @@ mutual
                         Just tag' => emit emptyFC "\{els}if (((Value_Constructor *)\{sc'})->tag == \{show tag'} /* \{show name} */) {"
 
             let conArgs = ALocal <$> args
-            let ownedWithArgs = union (fromList conArgs) $ if erased || isEnum coninfo then delete sc env.owned else env.owned
+            let ownedWithArgs = SortedSet.union (fromList conArgs) $ if erased || isEnum coninfo then delete sc env.owned else env.owned
             let (shouldDrop, actualOwned) = dropUnusedOwnedVars ownedWithArgs (freeVariables body)
             let usedCons = usedConstructors body
             let (dropReuseCons, actualReuseMap) = dropUnusedReuseCons env.reuseMap usedCons
@@ -663,12 +709,32 @@ mutual
             _ <- foldlC (\k, arg => do
                 emit emptyFC "Value *var_\{show arg} = ((Value_Constructor*)\{sc'})->args[\{show k}];"
                 pure (S k) ) 0 args
+            -- QTT optimization: if the scrutinee is Rig1 (linear), its refcount is
+            -- guaranteed to be 1. We can unconditionally reuse the constructor memory
+            -- without a uniqueness check (no dup/free needed for fields either).
+            let linearScrutinee : Bool = contains sc env.linearVars && not erased && not (isEnum coninfo)
             -- Compute arity-matched constructor names for cross-constructor reuse
             let matchedArity = length args
             let arityNames : List Name = Prelude.toList $ SortedSet.delete name $
                   the (SortedSet Name) $ fromList $
                   map fst $ filter (\p => snd p == matchedArity) (usedConstructorsWithArities body)
-            (shouldDrop, actualReuseMap) <- addReuseConstructor env.reuseMap sc' name (varName <$> conArgs) usedCons shouldDrop actualReuseMap arityNames
+            (shouldDrop, actualReuseMap) <-
+              the (Core (List String, SortedMap Name String)) $
+              if linearScrutinee then do
+                let namesToInsert = (if contains name usedCons then [name] else []) ++ arityNames
+                if not (null namesToInsert) && isJust (find (== sc') shouldDrop)
+                  then do
+                    -- Rig1 + reuse opportunity: unconditionally reuse (no isUnique check)
+                    let constr = "constructor_" ++ !(getNextCounter)
+                    emit emptyFC "Value_Constructor* \{constr} = (Value_Constructor*)\{sc'};"
+                    let reuseEntries = foldl (\m, n => insert n constr m) actualReuseMap namesToInsert
+                    pure (shouldDrop \\ (sc' :: (varName <$> conArgs)), reuseEntries)
+                  else do
+                    -- Rig1 but no reuse opportunity: free shell, fields exclusively owned
+                    emit emptyFC "idris2_removeReuseConstructor((Value_Constructor*)\{sc'});"
+                    pure (filter (/= sc') shouldDrop, actualReuseMap)
+              else
+                addReuseConstructor env.reuseMap sc' name (varName <$> conArgs) usedCons shouldDrop actualReuseMap arityNames
             removeVars shouldDrop
             removeReuseConstructors dropReuseCons
             put EnvTracker ({owned := actualOwned, reuseMap := actualReuseMap} env)
@@ -889,6 +955,7 @@ createCFunctions : {auto c : Ref Ctxt Defs}
                 -> ANFDef
                 -> Core ()
 createCFunctions n (MkAFun args anf) = do
+    linearArgSet <- getLinearArgSet n args
     let nargs = length args
     let fn = "Value *\{cName !(getFullName n)}"
             ++ (if nargs == 0 then "(void)"
@@ -898,7 +965,8 @@ createCFunctions n (MkAFun args anf) = do
 
     let argsVars = fromList $ ALocal <$> args
     let bodyFreeVars = freeVariables anf
-    let shouldDrop = difference argsVars bodyFreeVars
+    -- Don't removeReference linear args — they are consumed exactly once
+    let shouldDrop = difference (difference argsVars bodyFreeVars) linearArgSet
     let argsNrs = getArgsNrList args Z
     emit EmptyFC fn
     emit EmptyFC "{"
@@ -913,14 +981,14 @@ createCFunctions n (MkAFun args anf) = do
         emit EmptyFC "while(1) {"
         increaseIndentation
         removeVars (varName <$> Prelude.toList shouldDrop)
-        _ <- newRef EnvTracker (MkEnv bodyFreeVars empty)
+        _ <- newRef EnvTracker (MkEnv bodyFreeVars empty linearArgSet)
         emit EmptyFC "Value *__result = \{!(cStatementsFromANF anf (InSelfTailPosition n args))};"
         emit EmptyFC "return __result;"
         decreaseIndentation
         emit EmptyFC "}"
        else do
         removeVars (varName <$> Prelude.toList shouldDrop)
-        _ <- newRef EnvTracker (MkEnv bodyFreeVars empty)
+        _ <- newRef EnvTracker (MkEnv bodyFreeVars empty linearArgSet)
         emit EmptyFC "return \{!(cStatementsFromANF anf InTailPosition)};"
     decreaseIndentation
     emit EmptyFC  "}\n"
