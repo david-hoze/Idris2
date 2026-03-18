@@ -747,6 +747,9 @@ data REPLCmd : Type where
      SetConsoleWidth : Maybe Nat -> REPLCmd
      SetColor : Bool -> REPLCmd
      Metavars : REPLCmd
+     Holes : REPLCmd
+     ShowDefs : REPLCmd
+     ProgStatus : REPLCmd
      Editing : EditCmd -> REPLCmd
      RunShellCommand : String -> REPLCmd
      ShowVersion : REPLCmd

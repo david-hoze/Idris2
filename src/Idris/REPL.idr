@@ -32,6 +32,7 @@ import Idris.IDEMode.Holes
 import Idris.ModTree
 import Idris.Parser
 import Idris.Pretty
+import Idris.Progressive.ErrorLevel
 import Idris.ProcessIdr
 import Idris.Resugar
 import Idris.Syntax
@@ -1076,6 +1077,71 @@ process (SetColor b)
 process Metavars
     = do hs <- getUserHolesData
          pure $ Printed $ reAnnotate Syntax $ prettyHoles hs
+process Holes
+    = do hs <- getUserHolesData
+         pure $ Printed $ reAnnotate Syntax $ prettyHoles hs
+process ShowDefs
+    = do defs <- get Ctxt
+         let ns = currentNS defs
+         let ctxt = gamma defs
+         let start = firstEntry ctxt
+         let end = nextEntry ctxt
+         docs <- showDefsRange defs ns start end
+         case docs of
+              [] => pure $ Printed $ pretty0 "No definitions in current session."
+              _  => pure $ Printed $ vsep docs
+  where
+    matchNS : Namespace -> Name -> Bool
+    matchNS ns' (NS n _) = ns' == n
+    matchNS _ _ = False
+    showDefsRange : Defs -> Namespace -> Int -> Int -> Core (List (Doc IdrisAnn))
+    showDefsRange defs ns' idx end =
+      if idx >= end then pure []
+      else do
+        Just gdef <- lookupCtxtExact (Resolved idx) (gamma defs)
+          | Nothing => showDefsRange defs ns' (idx + 1) end
+        let fn = fullname gdef
+        rest <- showDefsRange defs ns' (idx + 1) end
+        if matchNS ns' fn && isUserName fn && not (isJust (Holes.isHole gdef))
+          then do ty <- displayType True defs (fn, idx, gdef)
+                  pure $ (reAnnotate Syntax ty) :: rest
+          else pure rest
+process ProgStatus
+    = do hasProg <- hasProgressiveDefinitions
+         lvl <- detectAnnotationLevel
+         hs <- getUserHolesData
+         defs <- get Ctxt
+         let ns = currentNS defs
+         (nSynth, nAnnot) <- countDefs defs ns (firstEntry (gamma defs)) (nextEntry (gamma defs))
+         let progLine = if hasProg
+               then "Progressive mode: active"
+               else "Progressive mode: inactive"
+         let lvlLine = "Annotation level: " ++ show lvl ++ case lvl of
+               0 => " (no annotations)"
+               1 => " (simple types)"
+               2 => " (polymorphic/constraints)"
+               3 => " (multiplicities)"
+               _ => " (dependent types)"
+         let defsLine = show nSynth ++ " unannotated, " ++ show nAnnot ++ " annotated"
+         let holesLine = show (length hs) ++ " hole(s)"
+         pure $ Printed $ vsep $ map pretty0
+           [progLine, lvlLine, defsLine, holesLine]
+  where
+    countDefs : Defs -> Namespace -> Int -> Int -> Core (Nat, Nat)
+    countDefs defs ns idx end =
+      if idx >= end then pure (0, 0)
+      else do
+        Just gdef <- lookupCtxtExact (Resolved idx) (gamma defs)
+          | Nothing => countDefs defs ns (idx + 1) end
+        (s, a) <- countDefs defs ns (idx + 1) end
+        let fn = fullname gdef
+        case fn of
+          NS n _ => if n == ns
+            then if elem SynthesisedType (flags gdef)
+              then pure (S s, a)
+              else pure (s, S a)
+            else pure (s, a)
+          _ => pure (s, a)
 
 process (Editing cmd)
     = do ppopts <- getPPrint

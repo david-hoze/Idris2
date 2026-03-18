@@ -2223,7 +2223,10 @@ knownCommands =
   [ ("consolewidth", "Set the width of the console output (0 for unbounded) (auto by default)")
   ] ++
   explain ["colour", "color"] "Whether to use colour for the console output (enabled by default)" ++
-  explain ["m", "metavars"] "Show remaining proof obligations (metavariables or holes)" ++
+  explain ["m", "metavars", "holes"] "Show remaining proof obligations (metavariables or holes)" ++
+  [ ("defs", "Show all definitions in the current REPL session")
+  , ("prog", "Show progressive typing status: annotation level, unannotated vs annotated definitions")
+  ] ++
   [ ("typeat", "Show type of term <n> defined on line <l> and column <c>")
   ] ++
   explain ["cs", "casesplit"] "Case split term <n> defined on line <l> and column <c>" ++
@@ -2708,7 +2711,9 @@ parserCommandsForHelp =
   , loggingArgCmd (ParseREPLCmd ["log", "logging"]) SetLog (firstHelpLine "log")
   , autoNumberArgCmd (ParseREPLCmd ["consolewidth"]) SetConsoleWidth (firstHelpLine "consolewidth")
   , onOffArgCmd (ParseREPLCmd ["colour", "color"]) SetColor (firstHelpLine "colour")
-  , noArgCmd (ParseREPLCmd ["m", "metavars"]) Metavars (firstHelpLine "m")
+  , noArgCmd (ParseREPLCmd ["m", "metavars", "holes"]) Metavars (firstHelpLine "m")
+  , noArgCmd (ParseREPLCmd ["defs"]) ShowDefs (firstHelpLine "defs")
+  , noArgCmd (ParseREPLCmd ["prog"]) ProgStatus (firstHelpLine "prog")
   , editLineColNameArgCmd (ParseREPLCmd ["typeat"]) (const TypeAt) (firstHelpLine "typeat")
   , editLineColNameArgCmd (ParseREPLCmd ["cs", "casesplit"]) CaseSplit (firstHelpLine "cs")
   , editLineNameArgCmd (ParseREPLCmd ["ac", "addclause"]) AddClause (firstHelpLine "ac")
