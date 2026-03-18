@@ -7,10 +7,10 @@
 
 #include "_datatypes.h"
 #include "buffer.h"
+#include "memoryManagement.h"
 #include "casts.h"
 #include "clock.h"
 #include "mathFunctions.h"
-#include "memoryManagement.h"
 #include "prim.h"
 #include "runtime.h"
 #include "stringOps.h"

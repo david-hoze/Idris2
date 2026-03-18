@@ -158,6 +158,9 @@ void idris2_removeReuseConstructor(Value_Constructor *constr) {
 }
 
 int idris2_extractInt(Value *v) {
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(v))
+    return (int)IDRIS2_FIXNUM_VAL(v);
+
   if (idris2_vp_is_unboxed(v))
     return (int)((uintptr_t)(v) >> idris2_vp_int_shift);
 
@@ -167,7 +170,7 @@ int idris2_extractInt(Value *v) {
   case BITS64_TAG:
     return (int)idris2_vp_to_Bits64(v);
   case INT32_TAG:
-    return (int)idris2_vp_to_Bits32(v);
+    return (int)idris2_vp_to_Int32(v);
   case INT64_TAG:
     return (int)idris2_vp_to_Int64(v);
   case INTEGER_TAG:

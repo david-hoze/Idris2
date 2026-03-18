@@ -1,6 +1,7 @@
 #pragma once
 
 #include <gmp.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -60,6 +61,59 @@ them first. Of course, this flag is not used if it is clear that Value* is
 actually an Int. But places like newReference/removeReference require this flag.
  */
 #define idris2_vp_is_unboxed(p) ((uintptr_t)(p)&3)
+
+/* Pointer tag dispatch (2-bit):
+ *   0b00 = heap pointer (aligned allocation)
+ *   0b01 = small int (Int8-32, Bits8-32, Char)
+ *   0b10 = unboxed double (Phase 3b)
+ *   0b11 = fixnum Integer (62-bit signed, 64-bit platforms only)
+ */
+#define IDRIS2_PTR_TAG(p)           ((uintptr_t)(p) & 3)
+#define IDRIS2_IS_FIXNUM(p)         (IDRIS2_PTR_TAG(p) == 3)
+
+/* Fixnum encode/decode (62-bit signed, arithmetic shift right) */
+#define IDRIS2_FIXNUM_VAL(p)        ((int64_t)((intptr_t)(p) >> 2))
+#define IDRIS2_MKFIXNUM(v)          ((Value*)(((intptr_t)(v) << 2) | 3))
+#define IDRIS2_FIXNUM_MIN           (-(int64_t)((uint64_t)1 << 61))
+#define IDRIS2_FIXNUM_MAX           ((int64_t)(((uint64_t)1 << 61) - 1))
+#define IDRIS2_FITS_FIXNUM(v)       ((int64_t)(v) >= IDRIS2_FIXNUM_MIN && (int64_t)(v) <= IDRIS2_FIXNUM_MAX)
+
+/* Conservative check: rejects -2^61 (sizeinbase for |(-2^61)| is 62) but that's one value */
+#define IDRIS2_MPZ_FITS_FIXNUM(z)   (mpz_sizeinbase(z, 2) <= 61)
+
+/* Set mpz from int64, handling platforms where long < 64 bits (e.g. Windows) */
+static inline void idris2_mpz_init_set_int64(mpz_t z, int64_t v) {
+#if LONG_MAX >= INT64_MAX
+  mpz_init_set_si(z, (long)v);
+#else
+  mpz_init(z);
+  if (v >= 0) {
+    mpz_set_ui(z, (unsigned long)(uint32_t)((uint64_t)v >> 32));
+    mpz_mul_2exp(z, z, 32);
+    mpz_add_ui(z, z, (unsigned long)(uint32_t)v);
+  } else {
+    uint64_t abs_v = (uint64_t)(-(v + 1)) + 1u;
+    mpz_set_ui(z, (unsigned long)(uint32_t)(abs_v >> 32));
+    mpz_mul_2exp(z, z, 32);
+    mpz_add_ui(z, z, (unsigned long)(uint32_t)abs_v);
+    mpz_neg(z, z);
+  }
+#endif
+}
+
+/* Get int64 from mpz. Only call when IDRIS2_MPZ_FITS_FIXNUM is true. */
+static inline int64_t idris2_mpz_get_int64(mpz_srcptr z) {
+#if LONG_MAX >= INT64_MAX
+  return (int64_t)mpz_get_si(z);
+#else
+  int neg = mpz_sgn(z) < 0;
+  uint64_t uv = 0;
+  mpz_export(&uv, NULL, -1, sizeof(uint64_t), 0, 0, z);
+  return neg ? -(int64_t)uv : (int64_t)uv;
+#endif
+}
+
+/* idris2_Integer_mpz and idris2_Integer_result defined after Value_Integer struct */
 
 #define idris2_vp_int_shift                                                    \
   ((sizeof(uintptr_t) >= 8 && sizeof(Value *) >= 8) ? 32 : 16)
@@ -133,12 +187,35 @@ typedef struct {
 } Value_Double;
 
 static inline double idris2_vp_to_Double(Value *p) {
-  if (sizeof(uintptr_t) >= 8 && idris2_vp_is_unboxed(p)) {
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_PTR_TAG(p) == 2) {
     union { uintptr_t u; double d; } conv;
     conv.u = (uintptr_t)p & ~(uintptr_t)3;
     return conv.d;
   }
   return ((Value_Double *)p)->d;
+}
+
+/* Finalize a GMP Integer result: if it fits fixnum, free and return fixnum.
+   Takes ownership of the Value_Integer. */
+static inline Value *idris2_Integer_result(Value_Integer *v) {
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_MPZ_FITS_FIXNUM(v->i)) {
+    int64_t sv = idris2_mpz_get_int64(v->i);
+    mpz_clear(v->i);
+    free(v);
+    return IDRIS2_MKFIXNUM(sv);
+  }
+  return (Value *)v;
+}
+
+/* Get mpz_srcptr from fixnum or boxed Integer.
+   If fixnum, tmp is initialized — caller must mpz_clear(tmp) afterward.
+   If boxed, tmp is untouched — caller must NOT mpz_clear(tmp). */
+static inline mpz_srcptr idris2_Integer_mpz(Value *v, mpz_t tmp) {
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(v)) {
+    idris2_mpz_init_set_int64(tmp, IDRIS2_FIXNUM_VAL(v));
+    return tmp;
+  }
+  return ((Value_Integer *)v)->i;
 }
 
 typedef struct {

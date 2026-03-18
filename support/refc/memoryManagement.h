@@ -67,6 +67,16 @@ Value *idris2_mkInt64(int64_t i);
 
 Value_Integer *idris2_mkInteger();
 Value *idris2_mkIntegerLiteral(char *i);
+
+/* Create an Integer from an int64: returns fixnum on 64-bit if it fits */
+static inline Value *idris2_mkInteger_from_int64(int64_t v) {
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_FITS_FIXNUM(v))
+    return IDRIS2_MKFIXNUM(v);
+  Value_Integer *retVal = IDRIS2_NEW_VALUE(Value_Integer);
+  retVal->header.tag = INTEGER_TAG;
+  idris2_mpz_init_set_int64(retVal->i, v);
+  return (Value *)retVal;
+}
 Value_String *idris2_mkEmptyString(size_t l);
 Value_String *idris2_mkString(char *);
 

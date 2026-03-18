@@ -135,6 +135,12 @@ Value_Integer *idris2_mkInteger() {
 }
 
 Value *idris2_mkIntegerLiteral(char *i) {
+  if (sizeof(uintptr_t) >= 8) {
+    char *end;
+    long long v = strtoll(i, &end, 10);
+    if (*end == '\0' && IDRIS2_FITS_FIXNUM((int64_t)v))
+      return IDRIS2_MKFIXNUM((int64_t)v);
+  }
   Value_Integer *retVal = idris2_mkInteger();
   mpz_set_str(retVal->i, i, 10);
   return (Value *)retVal;
@@ -352,6 +358,9 @@ Value_Integer idris2_predefined_Integer[100];
 Value *idris2_getPredefinedInteger(int n) {
   IDRIS2_REFC_VERIFY(n >= 0 && n < 100,
                      "invalid range of predefined integers.");
+
+  if (sizeof(uintptr_t) >= 8)
+    return IDRIS2_MKFIXNUM(n);
 
   if (!idris2_predefined_integer_initialized) {
     idris2_predefined_integer_initialized = true;

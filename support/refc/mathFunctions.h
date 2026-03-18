@@ -32,12 +32,12 @@ Value *idris2_sub_Integer(Value *x, Value *y);
 #define idris2_sub_Double(l, r) (idris2_binop(Double, -, l, r))
 
 /* negate */
-#define idris2_nagate_Int8(x) (idris2_mkInt8(-(idris2_vp_to_Int8(x))))
-#define idris2_nagate_Int16(x) (idris2_mkInt16(-(idris2_vp_to_Int16(x))))
-#define idris2_nagate_Int32(x) (idris2_mkInt32(-(idris2_vp_to_Int32(x))))
-#define idris2_nagate_Int64(x) (idris2_mkInt64(-(idris2_vp_to_Int64(x))))
+#define idris2_negate_Int8(x) (idris2_mkInt8(-(idris2_vp_to_Int8(x))))
+#define idris2_negate_Int16(x) (idris2_mkInt16(-(idris2_vp_to_Int16(x))))
+#define idris2_negate_Int32(x) (idris2_mkInt32(-(idris2_vp_to_Int32(x))))
+#define idris2_negate_Int64(x) (idris2_mkInt64(-(idris2_vp_to_Int64(x))))
 Value *idris2_negate_Integer(Value *x);
-#define idris2_nagate_Double(x) (idris2_mkDouble(-(idris2_vp_to_Double(x))))
+#define idris2_negate_Double(x) (idris2_mkDouble(-(idris2_vp_to_Double(x))))
 
 /* mul */
 #define idris2_mul_Bits8(l, r) (idris2_binop(Bits8, *, l, r))
@@ -141,9 +141,17 @@ Value *idris2_xor_Integer(Value *x, Value *y);
 #define idris2_lt_Int16(l, r) (idris2_cmpop(Int16, <, l, r))
 #define idris2_lt_Int32(l, r) (idris2_cmpop(Int32, <, l, r))
 #define idris2_lt_Int64(l, r) (idris2_cmpop(Int64, <, l, r))
-#define idris2_lt_Integer(l, r)                                                \
-  (idris2_mkBool(                                                              \
-      mpz_cmp(((Value_Integer *)(l))->i, ((Value_Integer *)(r))->i) < 0))
+static inline Value *idris2_lt_Integer(Value *l, Value *r) {
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(l) && IDRIS2_IS_FIXNUM(r))
+    return idris2_mkBool(IDRIS2_FIXNUM_VAL(l) < IDRIS2_FIXNUM_VAL(r) ? 1 : 0);
+  mpz_t tl, tr;
+  mpz_srcptr lp = idris2_Integer_mpz(l, tl);
+  mpz_srcptr rp = idris2_Integer_mpz(r, tr);
+  Value *result = idris2_mkBool(mpz_cmp(lp, rp) < 0 ? 1 : 0);
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(l)) mpz_clear(tl);
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(r)) mpz_clear(tr);
+  return result;
+}
 #define idris2_lt_Double(l, r) (idris2_cmpop(Double, <, l, r))
 #define idris2_lt_Char(l, r) (idris2_cmpop(Char, <, l, r))
 #define idris2_lt_string(l, r)                                                 \
@@ -159,9 +167,17 @@ Value *idris2_xor_Integer(Value *x, Value *y);
 #define idris2_gt_Int16(l, r) (idris2_cmpop(Int16, >, l, r))
 #define idris2_gt_Int32(l, r) (idris2_cmpop(Int32, >, l, r))
 #define idris2_gt_Int64(l, r) (idris2_cmpop(Int64, >, l, r))
-#define idris2_gt_Integer(l, r)                                                \
-  (idris2_mkBool(                                                              \
-      mpz_cmp(((Value_Integer *)(l))->i, ((Value_Integer *)(r))->i) > 0))
+static inline Value *idris2_gt_Integer(Value *l, Value *r) {
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(l) && IDRIS2_IS_FIXNUM(r))
+    return idris2_mkBool(IDRIS2_FIXNUM_VAL(l) > IDRIS2_FIXNUM_VAL(r) ? 1 : 0);
+  mpz_t tl, tr;
+  mpz_srcptr lp = idris2_Integer_mpz(l, tl);
+  mpz_srcptr rp = idris2_Integer_mpz(r, tr);
+  Value *result = idris2_mkBool(mpz_cmp(lp, rp) > 0 ? 1 : 0);
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(l)) mpz_clear(tl);
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(r)) mpz_clear(tr);
+  return result;
+}
 #define idris2_gt_Double(l, r) (idris2_cmpop(Double, >, l, r))
 #define idris2_gt_Char(l, r) (idris2_cmpop(Char, >, l, r))
 #define idris2_gt_string(l, r)                                                 \
@@ -177,9 +193,17 @@ Value *idris2_xor_Integer(Value *x, Value *y);
 #define idris2_eq_Int16(l, r) (idris2_cmpop(Int16, ==, l, r))
 #define idris2_eq_Int32(l, r) (idris2_cmpop(Int32, ==, l, r))
 #define idris2_eq_Int64(l, r) (idris2_cmpop(Int64, ==, l, r))
-#define idris2_eq_Integer(l, r)                                                \
-  (idris2_mkBool(                                                              \
-      mpz_cmp(((Value_Integer *)(l))->i, ((Value_Integer *)(r))->i) == 0))
+static inline Value *idris2_eq_Integer(Value *l, Value *r) {
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(l) && IDRIS2_IS_FIXNUM(r))
+    return idris2_mkBool(IDRIS2_FIXNUM_VAL(l) == IDRIS2_FIXNUM_VAL(r) ? 1 : 0);
+  mpz_t tl, tr;
+  mpz_srcptr lp = idris2_Integer_mpz(l, tl);
+  mpz_srcptr rp = idris2_Integer_mpz(r, tr);
+  Value *result = idris2_mkBool(mpz_cmp(lp, rp) == 0 ? 1 : 0);
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(l)) mpz_clear(tl);
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(r)) mpz_clear(tr);
+  return result;
+}
 #define idris2_eq_Double(l, r) (idris2_cmpop(Double, ==, l, r))
 #define idris2_eq_Char(l, r) (idris2_cmpop(Char, ==, l, r))
 #define idris2_eq_string(l, r)                                                 \
@@ -195,9 +219,17 @@ Value *idris2_xor_Integer(Value *x, Value *y);
 #define idris2_lte_Int16(l, r) (idris2_cmpop(Int16, <=, l, r))
 #define idris2_lte_Int32(l, r) (idris2_cmpop(Int32, <=, l, r))
 #define idris2_lte_Int64(l, r) (idris2_cmpop(Int64, <=, l, r))
-#define idris2_lte_Integer(l, r)                                               \
-  (idris2_mkBool(                                                              \
-      mpz_cmp(((Value_Integer *)(l))->i, ((Value_Integer *)(r))->i) <= 0))
+static inline Value *idris2_lte_Integer(Value *l, Value *r) {
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(l) && IDRIS2_IS_FIXNUM(r))
+    return idris2_mkBool(IDRIS2_FIXNUM_VAL(l) <= IDRIS2_FIXNUM_VAL(r) ? 1 : 0);
+  mpz_t tl, tr;
+  mpz_srcptr lp = idris2_Integer_mpz(l, tl);
+  mpz_srcptr rp = idris2_Integer_mpz(r, tr);
+  Value *result = idris2_mkBool(mpz_cmp(lp, rp) <= 0 ? 1 : 0);
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(l)) mpz_clear(tl);
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(r)) mpz_clear(tr);
+  return result;
+}
 #define idris2_lte_Double(l, r) (idris2_cmpop(Double, <=, l, r))
 #define idris2_lte_Char(l, r) (idris2_cmpop(Char, <=, l, r))
 #define idris2_lte_string(l, r)                                                \
@@ -213,9 +245,17 @@ Value *idris2_xor_Integer(Value *x, Value *y);
 #define idris2_gte_Int16(l, r) (idris2_cmpop(Int16, >=, l, r))
 #define idris2_gte_Int32(l, r) (idris2_cmpop(Int32, >=, l, r))
 #define idris2_gte_Int64(l, r) (idris2_cmpop(Int64, >=, l, r))
-#define idris2_gte_Integer(l, r)                                               \
-  (idris2_mkBool(                                                              \
-      mpz_cmp(((Value_Integer *)(l))->i, ((Value_Integer *)(r))->i) >= 0))
+static inline Value *idris2_gte_Integer(Value *l, Value *r) {
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(l) && IDRIS2_IS_FIXNUM(r))
+    return idris2_mkBool(IDRIS2_FIXNUM_VAL(l) >= IDRIS2_FIXNUM_VAL(r) ? 1 : 0);
+  mpz_t tl, tr;
+  mpz_srcptr lp = idris2_Integer_mpz(l, tl);
+  mpz_srcptr rp = idris2_Integer_mpz(r, tr);
+  Value *result = idris2_mkBool(mpz_cmp(lp, rp) >= 0 ? 1 : 0);
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(l)) mpz_clear(tl);
+  if (sizeof(uintptr_t) >= 8 && IDRIS2_IS_FIXNUM(r)) mpz_clear(tr);
+  return result;
+}
 #define idris2_gte_Double(l, r) (idris2_cmpop(Double, >=, l, r))
 #define idris2_gte_Char(l, r) (idris2_cmpop(Char, >=, l, r))
 #define idris2_gte_string(l, r)                                                \
