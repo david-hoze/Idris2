@@ -5,9 +5,36 @@
 # Error tests: if a .error file exists (instead of .expected), the test
 # expects compilation to FAIL and checks that the error output contains
 # each non-empty line from the .error file.
-# Uses Chez Scheme backend.
+#
+# Usage: bash run_tests.sh [cg]
+#   cg = chez (default), zam, refc, etc.
+#   For zam backend, uses --exec main instead of compiling to binary.
 
-IDRIS2="${IDRIS2:-$(cd "$(dirname "$0")/../.." && pwd)/build/exec/idris2}"
+CG="${1:-chez}"
+
+IDRIS2_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+IDRIS2="${IDRIS2:-$IDRIS2_DIR/build/exec/idris2}"
+
+# On MSYS2/Windows, the bash launcher fails (no readlink/cygpath).
+# Use cmd.exe with the .cmd launcher instead.
+IDRIS2_CMD="$IDRIS2_DIR/build/exec/idris2.cmd"
+if [ -f "$IDRIS2_CMD" ]; then
+    # Convert MSYS path to Windows path for cmd.exe
+    IDRIS2_WIN=$(cygpath -w "$IDRIS2_CMD" 2>/dev/null || echo "$IDRIS2_CMD")
+    run_idris2() {
+        # Use temp file to preserve exit code (pipe loses it on MSYS2)
+        local tmpf=$(mktemp)
+        cmd.exe //C "$IDRIS2_WIN" --no-banner "$@" 2>&1 > "$tmpf"
+        local rc=$?
+        tr -d '\r' < "$tmpf"
+        rm -f "$tmpf"
+        return $rc
+    }
+else
+    run_idris2() {
+        "$IDRIS2" --no-banner "$@" 2>&1
+    }
+fi
 
 # Ensure correct Chez Scheme is on PATH (console build, not GUI)
 export PATH="/home/natanh/chez/bin:/ucrt64/bin:/usr/bin:$PATH"
@@ -33,7 +60,7 @@ for idr in $(find "$SCRIPT_DIR" -name '*.idr' | sort); do
 
     if [ -f "$error_expected" ]; then
         # Error test: compilation should fail
-        compile_out=$(cd "$dir" && "$IDRIS2" --no-color --check "$base.idr" 2>&1)
+        compile_out=$(cd "$dir" && run_idris2 --no-color --check "$base.idr")
         compile_rc=$?
 
         if [ $compile_rc -eq 0 ]; then
@@ -70,20 +97,33 @@ for idr in $(find "$SCRIPT_DIR" -name '*.idr' | sort); do
         continue
     fi
 
-    # Compile from the file's directory (Idris2 requires source in source dir)
-    compile_out=$(cd "$dir" && "$IDRIS2" --cg chez -o "$base" "$base.idr" 2>&1)
-    compile_rc=$?
+    if [ "$CG" = "zam" ]; then
+        # ZAM backend: interpret directly with --exec main (no binary output)
+        run_out=$(cd "$dir" && run_idris2 --cg zam "$base.idr" -x main | grep -v '^Warning: compiling hole')
+        run_rc=$?
+        if [ $run_rc -ne 0 ] && [ -z "$run_out" ]; then
+            echo -e "${RED}FAIL${NC} $base (execution failed)"
+            FAIL=$((FAIL + 1))
+            rm -rf "$dir/build"
+            continue
+        fi
+    else
+        # Standard backend: compile to binary, then run
+        compile_out=$(cd "$dir" && run_idris2 --cg "$CG" -o "$base" "$base.idr")
+        compile_rc=$?
 
-    if [ $compile_rc -ne 0 ]; then
-        echo -e "${RED}FAIL${NC} $base (compilation failed)"
-        echo "  $compile_out" | head -5
-        FAIL=$((FAIL + 1))
-        continue
+        if [ $compile_rc -ne 0 ]; then
+            echo -e "${RED}FAIL${NC} $base (compilation failed)"
+            echo "  $compile_out" | head -5
+            FAIL=$((FAIL + 1))
+            rm -rf "$dir/build"
+            continue
+        fi
+
+        # Run the compiled binary
+        run_out=$(cd "$dir" && bash "build/exec/$base" 2>&1)
+        run_rc=$?
     fi
-
-    # Run the compiled binary
-    run_out=$(cd "$dir" && bash "build/exec/$base" 2>&1)
-    run_rc=$?
 
     # Compare
     expected_out=$(cat "$expected")
@@ -102,7 +142,7 @@ for idr in $(find "$SCRIPT_DIR" -name '*.idr' | sort); do
 done
 
 echo ""
-echo "Progressive tests: $TOTAL total, $PASS passed, $FAIL failed, $SKIP skipped"
+echo "Progressive tests ($CG): $TOTAL total, $PASS passed, $FAIL failed, $SKIP skipped"
 
 if [ $FAIL -gt 0 ]; then
     exit 1

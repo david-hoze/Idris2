@@ -14,6 +14,7 @@ import Core.TT
 import Idris.Syntax
 
 import Data.SortedMap
+import Data.String
 import Libraries.Utils.Path
 
 %default covering
@@ -37,9 +38,16 @@ executeZAM c s tmpDir tm = do
     Just entryLab => do
       -- Initialize and run the ZAM
       st <- coreLift $ initZAM code labels entryLab
-      result <- coreLift $ run 100000000 st
+      result <- coreLift $ run 10000000000 st  -- 10B steps
       case result of
-        Left err => coreLift $ putStrLn ("ZAM error: " ++ err)
+        Left err =>
+          -- ERROR: messages are deliberate program crashes (holes, Crash prim)
+          -- CRASH: messages are from the Crash primitive
+          if isPrefixOf "ERROR: " err
+            then coreLift $ putStrLn (substr 7 (length err) err)
+            else if isPrefixOf "CRASH: " err
+            then coreLift $ putStrLn err
+            else coreLift $ putStrLn ("ZAM error: " ++ err)
         Right val => pure ()  -- main should have produced IO side effects
 
 ||| The ZAM code generator interface.

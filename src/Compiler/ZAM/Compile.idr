@@ -119,12 +119,13 @@ compileExpr vm depth (AAppName fc _ n args) = do
       emit (ERROR ("unknown function: " ++ show n))
 
 compileExpr vm depth (AUnderApp fc n missing args) = do
-  -- Create a partial application closure
-  -- Push captured args, then create closure
+  -- Partial application: push provided args, mark for partial application, then call.
+  -- GRAB will detect the mark when it runs out of args and return a closure.
   pushArgs vm args
+  emit PUSHMARK
   mlab <- lookupFun n
   case mlab of
-    Just lab => emit (CLOSURE lab (length args))
+    Just lab => emit (CALL lab (length args))
     Nothing => emit (ERROR ("unknown function for closure: " ++ show n))
 
 compileExpr vm depth (AApp fc _ closure arg) = do

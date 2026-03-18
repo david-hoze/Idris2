@@ -104,6 +104,7 @@ valToInteger (VInt i) = cast i
 valToInteger (VInt64 i) = cast i
 valToInteger (VBits64 i) = cast i
 valToInteger (VBigInt i) = i
+valToInteger (VChar c) = cast (ord c)
 valToInteger _ = 0
 
 ||| Apply a binary integer operation.
@@ -116,14 +117,32 @@ intCmpOp f a b = VInt (if f (valToInteger a) (valToInteger b) then 1 else 0)
 
 ||| Execute a primitive operation.
 execPrim : {arity : Nat} -> PrimFn arity -> Vect arity ZValue -> IO ZValue
--- Arithmetic
+-- Double arithmetic (must come before generic patterns)
+execPrim (Add DoubleType) [VDouble a, VDouble b] = pure $ VDouble (a + b)
+execPrim (Sub DoubleType) [VDouble a, VDouble b] = pure $ VDouble (a - b)
+execPrim (Mul DoubleType) [VDouble a, VDouble b] = pure $ VDouble (a * b)
+execPrim (Div DoubleType) [VDouble a, VDouble b] = pure $ VDouble (a / b)
+execPrim (Neg DoubleType) [VDouble a] = pure $ VDouble (negate a)
+-- Integer/Int arithmetic (generic)
 execPrim (Add ty) [a, b] = pure $ intBinOp (+) a b
 execPrim (Sub ty) [a, b] = pure $ intBinOp (-) a b
 execPrim (Mul ty) [a, b] = pure $ intBinOp (*) a b
 execPrim (Div ty) [a, b] = pure $ intBinOp div a b
 execPrim (Mod ty) [a, b] = pure $ intBinOp mod a b
 execPrim (Neg ty) [a] = pure $ VBigInt (negate (valToInteger a))
--- Comparison
+-- Comparison (String-specific)
+execPrim (LT StringType) [VString a, VString b] = pure $ VInt (if a < b then 1 else 0)
+execPrim (LTE StringType) [VString a, VString b] = pure $ VInt (if a <= b then 1 else 0)
+execPrim (EQ StringType) [VString a, VString b] = pure $ VInt (if a == b then 1 else 0)
+execPrim (GTE StringType) [VString a, VString b] = pure $ VInt (if a >= b then 1 else 0)
+execPrim (GT StringType) [VString a, VString b] = pure $ VInt (if a > b then 1 else 0)
+-- Comparison (Double-specific)
+execPrim (LT DoubleType) [VDouble a, VDouble b] = pure $ VInt (if a < b then 1 else 0)
+execPrim (LTE DoubleType) [VDouble a, VDouble b] = pure $ VInt (if a <= b then 1 else 0)
+execPrim (EQ DoubleType) [VDouble a, VDouble b] = pure $ VInt (if a == b then 1 else 0)
+execPrim (GTE DoubleType) [VDouble a, VDouble b] = pure $ VInt (if a >= b then 1 else 0)
+execPrim (GT DoubleType) [VDouble a, VDouble b] = pure $ VInt (if a > b then 1 else 0)
+-- Comparison (generic, via integer conversion — works for Int, Integer, Char, Bits)
 execPrim (LT ty) [a, b] = pure $ intCmpOp (<) a b
 execPrim (LTE ty) [a, b] = pure $ intCmpOp (<=) a b
 execPrim (EQ ty) [a, b] = pure $ intCmpOp (==) a b
@@ -142,18 +161,20 @@ execPrim StrReverse [VString s] = pure $ VString (reverse s)
 execPrim StrCons [VChar c, VString s] = pure $ VString (strCons c s)
 execPrim StrSubstr [VInt start, VInt len, VString s] =
   pure $ VString (substr (cast start) (cast len) s)
--- Double operations
-execPrim (Add DoubleType) [VDouble a, VDouble b] = pure $ VDouble (a + b)
-execPrim (Sub DoubleType) [VDouble a, VDouble b] = pure $ VDouble (a - b)
-execPrim (Mul DoubleType) [VDouble a, VDouble b] = pure $ VDouble (a * b)
-execPrim (Div DoubleType) [VDouble a, VDouble b] = pure $ VDouble (a / b)
 -- Casts
+execPrim (Cast IntegerType DoubleType) [v] = pure $ VDouble (cast (valToInteger v))
+execPrim (Cast DoubleType IntegerType) [VDouble d] = pure $ VBigInt (cast d)
 execPrim (Cast IntegerType StringType) [v] = pure $ VString (show (valToInteger v))
 execPrim (Cast StringType IntegerType) [VString s] = pure $ VBigInt (cast s)
+execPrim (Cast StringType DoubleType) [VString s] = pure $ VDouble (cast s)
+execPrim (Cast DoubleType StringType) [VDouble d] = pure $ VString (show d)
 execPrim (Cast IntegerType IntType) [v] = pure $ VInt (cast (valToInteger v))
 execPrim (Cast IntType IntegerType) [VInt i] = pure $ VBigInt (cast i)
+execPrim (Cast IntType DoubleType) [VInt i] = pure $ VDouble (cast i)
+execPrim (Cast DoubleType IntType) [VDouble d] = pure $ VInt (cast d)
 execPrim (Cast CharType IntType) [VChar c] = pure $ VInt (cast (ord c))
 execPrim (Cast IntType CharType) [VInt i] = pure $ VChar (chr (cast i))
+execPrim (Cast CharType IntegerType) [VChar c] = pure $ VBigInt (cast (ord c))
 execPrim (Cast ty StringType) [v] = pure $ VString (showVal v)
   where
     showVal : ZValue -> String
@@ -188,12 +209,30 @@ execExtPrim n [VChar c, _]
   = if show n == "Prelude.IO.prim__putChar"
     then do putChar c; pure VNull
     else pure VNull
--- getStr
-execExtPrim n [_]
+-- fastUnpack: String -> List Char (used by show for String)
+execExtPrim n [VString s]
+  = if show n == "Prelude.Types.fastUnpack"
+       || show n == "prelude.fastUnpack"
+    then pure (strToList s)
+    else pure VNull
+  where
+    strToList : String -> ZValue
+    strToList s = case strUncons s of
+      Nothing     => VCon (Left 0) []    -- Nil
+      Just (c, t) => VCon (Left 1) [VChar c, strToList t]  -- Cons c rest
+-- getStr / fastPack
+execExtPrim n [v]
   = if show n == "Prelude.IO.prim__getStr"
        || show n == "prelude.prim__getStr"
     then do s <- getLine; pure (VString s)
+    else if show n == "Prelude.Types.fastPack"
+       || show n == "prelude.fastPack"
+    then pure (VString (listToStr v))
     else pure VNull
+  where
+    listToStr : ZValue -> String
+    listToStr (VCon (Left 1) [VChar c, rest]) = strCons c (listToStr rest)
+    listToStr _ = ""
 -- Default
 execExtPrim _ _ = pure VNull
 
@@ -340,8 +379,9 @@ step st = do
         (arg :: rest) =>
           pure (Right ({ env := st.env ++ [arg], argStack := rest } next))
         [] =>
-          -- Partial application: create closure and return to caller
-          let closure = VClosure (st.pc - 1) st.env [] in
+          -- Partial application: create closure pointing to THIS grab,
+          -- so re-entry consumes the next provided arg.
+          let closure = VClosure st.pc st.env [] in
           case st.retStack of
             (RetFrame retpc retenv :: MarkFrame :: retRest) =>
               -- APPLY context: RetFrame above MarkFrame
@@ -395,7 +435,7 @@ step st = do
       pure (Right ({ pc := lab, env := [],
                     retStack := RetFrame (st.pc + 1) st.env :: st.retStack } st))
 
-    TAILCALL lab nargs =>
+    TAILCALL lab nargs => do
       pure (Right ({ pc := lab, env := [] } st))
 
     MAKEBLOCK tag arity => do
