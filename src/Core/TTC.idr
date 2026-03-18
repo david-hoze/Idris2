@@ -905,6 +905,7 @@ TTC CG where
   toBuf Javascript = tag 6
   toBuf RefC = tag 7
   toBuf VMCodeInterp = tag 8
+  toBuf ZAMInterp = tag 9
 
   fromBuf
       = case !getTag of
@@ -918,6 +919,7 @@ TTC CG where
              6 => pure Javascript
              7 => pure RefC
              8 => pure VMCodeInterp
+             9 => pure ZAMInterp
              _ => corrupt "CG"
 
 export
