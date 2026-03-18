@@ -107,12 +107,14 @@ valToInteger (VBigInt i) = i
 valToInteger (VChar c) = cast (ord c)
 valToInteger _ = 0
 
-||| Apply a binary integer operation.
+||| Apply a binary integer operation (fast path for VBigInt).
 intBinOp : (Integer -> Integer -> Integer) -> ZValue -> ZValue -> ZValue
+intBinOp f (VBigInt a) (VBigInt b) = VBigInt (f a b)
 intBinOp f a b = VBigInt (f (valToInteger a) (valToInteger b))
 
-||| Apply a binary comparison.
+||| Apply a binary comparison (fast path for VBigInt).
 intCmpOp : (Integer -> Integer -> Bool) -> ZValue -> ZValue -> ZValue
+intCmpOp f (VBigInt a) (VBigInt b) = VInt (if f a b then 1 else 0)
 intCmpOp f a b = VInt (if f (valToInteger a) (valToInteger b) then 1 else 0)
 
 ||| Execute a primitive operation.
@@ -148,6 +150,12 @@ execPrim (LTE ty) [a, b] = pure $ intCmpOp (<=) a b
 execPrim (EQ ty) [a, b] = pure $ intCmpOp (==) a b
 execPrim (GTE ty) [a, b] = pure $ intCmpOp (>=) a b
 execPrim (GT ty) [a, b] = pure $ intCmpOp (>) a b
+-- Bitwise operations
+execPrim (ShiftL ty) [a, b] = pure $ VBigInt (prim__shl_Integer (valToInteger a) (valToInteger b))
+execPrim (ShiftR ty) [a, b] = pure $ VBigInt (prim__shr_Integer (valToInteger a) (valToInteger b))
+execPrim (BAnd ty) [a, b] = pure $ VBigInt (prim__and_Integer (valToInteger a) (valToInteger b))
+execPrim (BOr ty) [a, b] = pure $ VBigInt (prim__or_Integer (valToInteger a) (valToInteger b))
+execPrim (BXOr ty) [a, b] = pure $ VBigInt (prim__xor_Integer (valToInteger a) (valToInteger b))
 -- String operations
 execPrim StrLength [VString s] = pure $ VInt (cast (length s))
 execPrim StrHead [VString s] = pure $ case strUncons s of
@@ -159,8 +167,22 @@ execPrim StrTail [VString s] = pure $ case strUncons s of
 execPrim StrAppend [VString a, VString b] = pure $ VString (a ++ b)
 execPrim StrReverse [VString s] = pure $ VString (reverse s)
 execPrim StrCons [VChar c, VString s] = pure $ VString (strCons c s)
+execPrim StrIndex [VString s, VInt i] = pure $ VChar (assert_total $ prim__strIndex s i)
 execPrim StrSubstr [VInt start, VInt len, VString s] =
   pure $ VString (substr (cast start) (cast len) s)
+-- Double math
+execPrim DoublePow [VDouble a, VDouble b] = pure $ VDouble (pow a b)
+execPrim DoubleExp [VDouble a] = pure $ VDouble (exp a)
+execPrim DoubleLog [VDouble a] = pure $ VDouble (log a)
+execPrim DoubleSin [VDouble a] = pure $ VDouble (sin a)
+execPrim DoubleCos [VDouble a] = pure $ VDouble (cos a)
+execPrim DoubleTan [VDouble a] = pure $ VDouble (tan a)
+execPrim DoubleASin [VDouble a] = pure $ VDouble (asin a)
+execPrim DoubleACos [VDouble a] = pure $ VDouble (acos a)
+execPrim DoubleATan [VDouble a] = pure $ VDouble (atan a)
+execPrim DoubleSqrt [VDouble a] = pure $ VDouble (sqrt a)
+execPrim DoubleFloor [VDouble a] = pure $ VDouble (floor a)
+execPrim DoubleCeiling [VDouble a] = pure $ VDouble (ceiling a)
 -- Casts
 execPrim (Cast IntegerType DoubleType) [v] = pure $ VDouble (cast (valToInteger v))
 execPrim (Cast DoubleType IntegerType) [VDouble d] = pure $ VBigInt (cast d)
@@ -184,6 +206,8 @@ execPrim (Cast ty StringType) [v] = pure $ VString (showVal v)
     showVal (VDouble d) = show d
     showVal (VChar c) = cast c
     showVal v = show v
+-- Generic cast fallback (identity)
+execPrim (Cast f t) [v] = pure v
 -- BelieveMe
 execPrim BelieveMe [_, _, v] = pure v
 -- Crash
