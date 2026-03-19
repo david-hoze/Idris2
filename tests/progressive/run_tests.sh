@@ -18,7 +18,7 @@ IDRIS2="${IDRIS2:-$IDRIS2_DIR/build/exec/idris2}"
 # On MSYS2/Windows, the bash launcher fails (no readlink/cygpath).
 # Use cmd.exe with the .cmd launcher instead.
 IDRIS2_CMD="$IDRIS2_DIR/build/exec/idris2.cmd"
-if [ -f "$IDRIS2_CMD" ]; then
+if [ -f "$IDRIS2_CMD" ] && command -v cmd.exe &>/dev/null; then
     # Convert MSYS path to Windows path for cmd.exe
     IDRIS2_WIN=$(cygpath -w "$IDRIS2_CMD" 2>/dev/null || echo "$IDRIS2_CMD")
     run_idris2() {
@@ -120,13 +120,17 @@ for idr in $(find "$SCRIPT_DIR" -name '*.idr' | sort); do
             continue
         fi
 
-        # Run the compiled binary
-        run_out=$(cd "$dir" && bash "build/exec/$base" 2>&1)
+        # Run the compiled binary (try direct exe, fall back to bash wrapper)
+        if [ -f "$dir/build/exec/$base.exe" ]; then
+            run_out=$(cd "$dir" && "build/exec/$base.exe" 2>&1 | tr -d '\r')
+        else
+            run_out=$(cd "$dir" && bash "build/exec/$base" 2>&1 | tr -d '\r')
+        fi
         run_rc=$?
     fi
 
     # Compare
-    expected_out=$(cat "$expected")
+    expected_out=$(tr -d '\r' < "$expected")
     if [ "$run_out" = "$expected_out" ]; then
         echo -e "${GREEN}PASS${NC} $base"
         PASS=$((PASS + 1))

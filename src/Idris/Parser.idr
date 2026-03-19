@@ -228,6 +228,7 @@ mutual
     <|> lam fname indents
     <|> lazy fname indents
     <|> if_ fname indents
+    <|> pyFor fname indents
     <|> with_ fname indents
     <|> do b <- bounds (MkPair <$> simpleExpr fname indents <*> many (argExpr q fname indents))
            (f, args) <- pure b.val
@@ -870,19 +871,70 @@ mutual
            pure (MkImpossible (boundToFC fname (mergeBounds start end)) lhs)
     <|> fatalError ("Expected '=>' or 'impossible'")
 
+  -- Python-style elif/else chain parser
+  -- col is the column of the if/elif keyword — body must be more indented
+  pyElifs : OriginDesc -> IndentInfo -> IndentInfo -> EmptyRule PTerm
+  pyElifs fname indents col
+      -- elif cond: body [elif ..] [else ..]
+      = do exactIdent "elif"
+           cond <- expr pdef fname col
+           symbol ":"
+           thenBody <- do continue indents
+                          typeExpr pdef fname col
+           elseBody <- pyElifs fname indents col
+           pure (PIfThenElse EmptyFC cond thenBody elseBody)
+      -- else: body
+    <|> do decoratedKeyword fname "else"
+           symbol ":"
+           continue indents
+           typeExpr pdef fname col
+      -- no else: unit
+    <|> pure (PUnit EmptyFC)
+
   if_ : OriginDesc -> IndentInfo -> Rule PTerm
   if_ fname indents
-      = do b <- bounds (do decoratedKeyword fname "if"
+      = do col <- column
+           b <- bounds (do decoratedKeyword fname "if"
                            commit
                            x <- expr pdef fname indents
-                           commitKeyword fname indents "then"
-                           t <- typeExpr pdef fname indents
-                           commitKeyword fname indents "else"
-                           e <- typeExpr pdef fname indents
-                           pure (x, t, e))
+                           ifBranch col x <|> thenBranch x)
            mustWork $ atEnd indents
-           (x, t, e) <- pure b.val
-           pure (PIfThenElse (boundToFC fname b) x t e)
+           pure b.val
+    where
+      ifBranch : IndentInfo -> PTerm -> Rule PTerm
+      ifBranch col x = do symbol ":"
+                          t <- do continue indents
+                                  typeExpr pdef fname col
+                          e <- pyElifs fname indents col
+                          pure (PIfThenElse EmptyFC x t e)
+      thenBranch : PTerm -> Rule PTerm
+      thenBranch x = do commitKeyword fname indents "then"
+                        t <- typeExpr pdef fname indents
+                        commitKeyword fname indents "else"
+                        e <- typeExpr pdef fname indents
+                        pure (PIfThenElse EmptyFC x t e)
+
+  -- Python-style for loop:
+  --   for x in xs: body  →  traverse_ (\x => body) xs
+  pyFor : OriginDesc -> IndentInfo -> Rule PTerm
+  pyFor fname indents
+      = do exactIdent "for"
+           commit
+           n <- bounds (decorate fname Bound unqualifiedName)
+           decoratedKeyword fname "in"
+           iter <- expr pdef fname indents
+           symbol ":"
+           continue indents
+           body <- typeExpr pdef fname indents
+           pure (mkFor (boundToFC fname n) n.val iter body)
+    where
+      mkFor : FC -> String -> PTerm -> PTerm -> PTerm
+      mkFor nFC varName iter body =
+        let fc = nFC
+            varPat = PRef nFC (UN (Basic varName))
+            lam = PLam fc top Explicit varPat (PImplicit fc) body
+            trav = PRef fc (UN (Basic "traverse_"))
+        in PApp fc (PApp fc trav lam) iter
 
   record_ : OriginDesc -> IndentInfo -> Rule PTerm
   record_ fname indents

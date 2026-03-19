@@ -462,7 +462,7 @@ export %inline
 dataTypeName : Rule Name
 dataTypeName = opNonNS <|> capitalisedName
 
-export
+public export
 IndentInfo : Type
 IndentInfo = Int
 
