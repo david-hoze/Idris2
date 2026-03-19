@@ -1883,9 +1883,73 @@ parameters {auto fname : OriginDesc} {auto indents : IndentInfo}
       newParamDecls = some typedArg
 
 
+  -- Python-style function definition:
+  --   def name(x: Type, y: Type) -> RetType:
+  --     body
+  -- Desugars to PClaim + PDef wrapped in PMutual (if typed),
+  -- or just PDef (if untyped).
+  pyDef : Rule PDeclNoFC
+  pyDef
+      = do exactIdent "def"
+           fnName <- bounds (decorate fname Function name)
+           symbol "("
+           commit
+           args <- sepBy (decoratedSymbol fname ",")
+                     (do n <- bounds (decorate fname Bound unqualifiedName)
+                         ty <- optional (do decoratedSymbol fname ":"
+                                            typeExpr pdef fname indents)
+                         pure (n, ty))
+           commitSymbol fname ")"
+           retTy <- optional (do symbol "->"
+                                 typeExpr pdef fname indents)
+           commitSymbol fname ":"
+           continue indents
+           ignore $ optional (exactIdent "return")
+           body <- typeExpr pdef fname indents
+           atEnd indents
+           let fc = EmptyFC
+           let fName = fnName.val
+           let fFC = boundToFC fname fnName
+           -- Build the LHS: name applied to pattern variables
+           let lhs = buildLHS fc fFC fName args
+           -- Build the clause
+           let cl = MkPatClause fc lhs body []
+           -- Build result: PMutual with type sig if annotations present, else just PDef
+           pure $ buildPyDecl fc fFC fName args retTy cl
+    where
+      buildLHS : FC -> FC -> Name -> List (WithBounds String, Maybe PTerm) -> PTerm
+      buildLHS fc fFC fName [] = PRef fFC fName
+      buildLHS fc fFC fName ((n, _) :: rest) =
+        foldl (\f, (n', _) =>
+          PApp fc f (PRef (boundToFC fname n') (UN (Basic n'.val))))
+          (PApp fc (PRef fFC fName) (PRef (boundToFC fname n) (UN (Basic n.val))))
+          rest
+
+      buildSigTy : FC -> List (WithBounds String, Maybe PTerm) -> PTerm -> PTerm
+      buildSigTy fc [] ret = ret
+      buildSigTy fc ((_, mty) :: rest) ret =
+        PPi fc top Explicit Nothing (fromMaybe (PImplicit fc) mty) (buildSigTy fc rest ret)
+
+      hasTypeAnnotations : List (WithBounds String, Maybe PTerm) -> Maybe PTerm -> Bool
+      hasTypeAnnotations args retTy =
+        isJust retTy || any (\x => isJust (snd x)) args
+
+      buildPyDecl : FC -> FC -> Name -> List (WithBounds String, Maybe PTerm)
+                 -> Maybe PTerm -> PClause -> PDeclNoFC
+      buildPyDecl fc fFC fName args retTy cl =
+        if hasTypeAnnotations args retTy
+          then let defRetTy = fromMaybe (PImplicit fc) retTy
+                   sigTy = buildSigTy fc args defRetTy
+                   sig = MkFCVal fc (MkPTy (singleton ("", MkFCVal fFC fName)) "" sigTy)
+                   claim = MkFCVal fc (PClaim (MkPClaim top Public [] sig))
+                   def = MkFCVal fc (PDef (singleton cl))
+               in PMutual [claim, def]
+          else PDef (singleton cl)
+
   definition : Rule PDeclNoFC
   definition
-      = do ignore $ optional (exactIdent "def")
+      = pyDef
+    <|> do ignore $ optional (exactIdent "def")
            nd <- clause 0 Nothing fname indents
            pure (PDef (singleton nd))
 
