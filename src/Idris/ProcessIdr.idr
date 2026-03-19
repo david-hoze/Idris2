@@ -355,6 +355,7 @@ getCG Javascript = pure $ Just codegenJavascript
 getCG RefC = pure $ Just codegenRefC
 getCG VMCodeInterp = pure $ Just codegenVMCodeInterp
 getCG ZAMInterp = pure $ Just codegenZAM
+getCG ZAMC = pure $ Just codegenZAMC
 getCG (Other s) = getCodegen s
 
 export

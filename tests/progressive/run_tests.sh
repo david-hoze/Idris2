@@ -97,7 +97,7 @@ for idr in $(find "$SCRIPT_DIR" -name '*.idr' | sort); do
         continue
     fi
 
-    if [ "$CG" = "zam" ]; then
+    if [ "$CG" = "zam" ] || [ "$CG" = "zamc" ]; then
         # ZAM backend: interpret directly with --exec main (no binary output)
         run_out=$(cd "$dir" && run_idris2 --cg zam "$base.idr" -x main | grep -v '^Warning: compiling hole')
         run_rc=$?

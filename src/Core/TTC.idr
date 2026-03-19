@@ -906,6 +906,7 @@ TTC CG where
   toBuf RefC = tag 7
   toBuf VMCodeInterp = tag 8
   toBuf ZAMInterp = tag 9
+  toBuf ZAMC = tag 10
 
   fromBuf
       = case !getTag of
@@ -920,6 +921,7 @@ TTC CG where
              7 => pure RefC
              8 => pure VMCodeInterp
              9 => pure ZAMInterp
+             10 => pure ZAMC
              _ => corrupt "CG"
 
 export

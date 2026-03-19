@@ -62,6 +62,7 @@ data CG = Chez
         | RefC
         | VMCodeInterp
         | ZAMInterp
+        | ZAMC
         | Other String
 
 export
@@ -75,6 +76,7 @@ Eq CG where
   RefC == RefC = True
   VMCodeInterp == VMCodeInterp = True
   ZAMInterp == ZAMInterp = True
+  ZAMC == ZAMC = True
   Other s == Other t = s == t
   _ == _ = False
 
@@ -89,6 +91,7 @@ Show CG where
   show RefC = "refc"
   show VMCodeInterp = "vmcode-interp"
   show ZAMInterp = "zam"
+  show ZAMC = "zamc"
   show (Other s) = s
 
 public export
@@ -215,7 +218,8 @@ availableCGs o
        ("refc", RefC),
        ("gambit", Gambit),
        ("vmcode-interp", VMCodeInterp),
-       ("zam", ZAMInterp)] ++ additionalCGs o
+       ("zam", ZAMInterp),
+       ("zamc", ZAMC)] ++ additionalCGs o
 
 export
 getCG : Options -> String -> Maybe CG
