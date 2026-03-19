@@ -47,40 +47,32 @@ Show ZValue where
   show VWorld = "%World"
 
 ------------------------------------------------------------------------
--- Machine state
+-- Machine state (for init/export only)
 ------------------------------------------------------------------------
 
 ||| Stack frame for return continuations.
+public export
 data Frame
   = RetFrame Label (List ZValue)    -- return address + saved environment
   | MarkFrame                       -- partial application sentinel
 
-||| The ZAM machine state.
+||| The ZAM machine state (used for initialization).
 export
 record ZState where
   constructor MkZState
-  accu     : ZValue                 -- accumulator register
-  env      : List ZValue            -- environment (closure vars + locals)
-  argStack : List ZValue            -- argument stack
-  retStack : List Frame             -- return/mark stack
-  pc       : Label                  -- program counter
-  code     : IOArray ZInst          -- bytecode array
-  codeLen  : Int                    -- length of bytecode
-  globals  : SortedMap Name Label   -- function name → entry label
-  fuel     : Nat                    -- step limit (prevents infinite loops)
-
-||| Read instruction at current PC.
-fetchInst : ZState -> IO (Maybe ZInst)
-fetchInst st =
-  if st.pc >= 0 && st.pc < st.codeLen
-    then readArray st.code st.pc
-    else pure Nothing
+  accu     : ZValue
+  env      : List ZValue
+  argStack : List ZValue
+  retStack : List Frame
+  pc       : Label
+  code     : IOArray ZInst
+  codeLen  : Int
+  globals  : SortedMap Name Label
 
 ------------------------------------------------------------------------
 -- Primitive operations
 ------------------------------------------------------------------------
 
-||| Convert a Constant to a ZValue.
 constToVal : Constant -> ZValue
 constToVal (I i) = VInt i
 constToVal (I8 i) = VInt (cast i)
@@ -98,7 +90,6 @@ constToVal (Db d) = VDouble d
 constToVal WorldVal = VWorld
 constToVal _ = VNull
 
-||| Extract integer value for comparisons and arithmetic.
 valToInteger : ZValue -> Integer
 valToInteger (VInt i) = cast i
 valToInteger (VInt64 i) = cast i
@@ -107,18 +98,15 @@ valToInteger (VBigInt i) = i
 valToInteger (VChar c) = cast (ord c)
 valToInteger _ = 0
 
-||| Apply a binary integer operation (fast path for VBigInt).
 intBinOp : (Integer -> Integer -> Integer) -> ZValue -> ZValue -> ZValue
 intBinOp f (VBigInt a) (VBigInt b) = VBigInt (f a b)
 intBinOp f a b = VBigInt (f (valToInteger a) (valToInteger b))
 
-||| Apply a binary comparison (fast path for VBigInt).
 intCmpOp : (Integer -> Integer -> Bool) -> ZValue -> ZValue -> ZValue
 intCmpOp f (VBigInt a) (VBigInt b) = VInt (if f a b then 1 else 0)
 intCmpOp f a b = VInt (if f (valToInteger a) (valToInteger b) then 1 else 0)
 
-||| Execute a primitive operation.
-execPrim : {arity : Nat} -> PrimFn arity -> Vect arity ZValue -> IO ZValue
+execPrim : {0 arity : Nat} -> PrimFn arity -> Vect arity ZValue -> IO ZValue
 -- Double arithmetic (must come before generic patterns)
 execPrim (Add DoubleType) [VDouble a, VDouble b] = pure $ VDouble (a + b)
 execPrim (Sub DoubleType) [VDouble a, VDouble b] = pure $ VDouble (a - b)
@@ -144,7 +132,7 @@ execPrim (LTE DoubleType) [VDouble a, VDouble b] = pure $ VInt (if a <= b then 1
 execPrim (EQ DoubleType) [VDouble a, VDouble b] = pure $ VInt (if a == b then 1 else 0)
 execPrim (GTE DoubleType) [VDouble a, VDouble b] = pure $ VInt (if a >= b then 1 else 0)
 execPrim (GT DoubleType) [VDouble a, VDouble b] = pure $ VInt (if a > b then 1 else 0)
--- Comparison (generic, via integer conversion — works for Int, Integer, Char, Bits)
+-- Comparison (generic)
 execPrim (LT ty) [a, b] = pure $ intCmpOp (<) a b
 execPrim (LTE ty) [a, b] = pure $ intCmpOp (<=) a b
 execPrim (EQ ty) [a, b] = pure $ intCmpOp (==) a b
@@ -206,15 +194,11 @@ execPrim (Cast ty StringType) [v] = pure $ VString (showVal v)
     showVal (VDouble d) = show d
     showVal (VChar c) = cast c
     showVal v = show v
--- Generic cast fallback (identity)
 execPrim (Cast f t) [v] = pure v
--- BelieveMe
 execPrim BelieveMe [_, _, v] = pure v
--- Crash
 execPrim Crash [_, VString msg] = do
   putStrLn ("CRASH: " ++ msg)
   pure VNull
--- Default: return null for unimplemented
 execPrim _ _ = pure VNull
 
 ------------------------------------------------------------------------
@@ -222,18 +206,15 @@ execPrim _ _ = pure VNull
 ------------------------------------------------------------------------
 
 execExtPrim : Name -> List ZValue -> IO ZValue
--- putStr
 execExtPrim n [VString s, _]
   = if show n == "Prelude.IO.prim__putStr"
        || show n == "prelude.prim__putStr"
     then do putStr s; pure VNull
     else pure VNull
--- putChar
 execExtPrim n [VChar c, _]
   = if show n == "Prelude.IO.prim__putChar"
     then do putChar c; pure VNull
     else pure VNull
--- fastUnpack: String -> List Char (used by show for String)
 execExtPrim n [VString s]
   = if show n == "Prelude.Types.fastUnpack"
        || show n == "prelude.fastUnpack"
@@ -242,9 +223,8 @@ execExtPrim n [VString s]
   where
     strToList : String -> ZValue
     strToList s = case strUncons s of
-      Nothing     => VCon (Left 0) []    -- Nil
-      Just (c, t) => VCon (Left 1) [VChar c, strToList t]  -- Cons c rest
--- getStr / fastPack
+      Nothing     => VCon (Left 0) []
+      Just (c, t) => VCon (Left 1) [VChar c, strToList t]
 execExtPrim n [v]
   = if show n == "Prelude.IO.prim__getStr"
        || show n == "prelude.prim__getStr"
@@ -257,14 +237,12 @@ execExtPrim n [v]
     listToStr : ZValue -> String
     listToStr (VCon (Left 1) [VChar c, rest]) = strCons c (listToStr rest)
     listToStr _ = ""
--- Default
 execExtPrim _ _ = pure VNull
 
 ------------------------------------------------------------------------
--- Execution engine
+-- Helpers
 ------------------------------------------------------------------------
 
-||| Pop n values from a list (used for arg stack).
 popN : Nat -> List a -> Maybe (List a, List a)
 popN Z xs = Just ([], xs)
 popN (S n) [] = Nothing
@@ -272,7 +250,6 @@ popN (S n) (x :: xs) = do
   (taken, rest) <- popN n xs
   Just (x :: taken, rest)
 
-||| Get constructor tag from a value.
 getTag : ZValue -> Maybe (Either Int Name)
 getTag (VCon tag _) = Just tag
 getTag _ = Nothing
@@ -290,280 +267,228 @@ matchConst (VInt i) (B16 j) = i == cast j
 matchConst (VInt i) (B32 j) = i == cast j
 matchConst _ _ = False
 
-arityOfPrim : {ar : Nat} -> PrimFn ar -> Nat
-arityOfPrim {ar} _ = ar
-
-fromListN : (n : Nat) -> List ZValue -> Vect n ZValue
-fromListN Z _ = []
-fromListN (S k) (x :: xs) = x :: fromListN k xs
-fromListN (S k) [] = VNull :: fromListN k []
-
 findConstMatch : ZValue -> List (Constant, Label) -> Maybe Label
 findConstMatch v [] = Nothing
 findConstMatch v ((c, lab) :: rest) =
   if matchConst v c then Just lab else findConstMatch v rest
 
-doPrim1 : (ZValue -> IO ZValue) -> ZState -> ZState -> IO (Either String ZState)
-doPrim1 f st next =
-  case st.argStack of
-    (a :: rest) => do
-      result <- f a
-      pure (Right ({ accu := result, argStack := rest } next))
-    _ => pure (Left "PRIM: not enough args (need 1)")
-
-doPrim2 : (ZValue -> ZValue -> IO ZValue) -> ZState -> ZState -> IO (Either String ZState)
-doPrim2 f st next =
-  case st.argStack of
-    (a :: b :: rest) => do
-      result <- f a b
-      pure (Right ({ accu := result, argStack := rest } next))
-    _ => pure (Left "PRIM: not enough args (need 2)")
-
-doPrim3 : (ZValue -> ZValue -> ZValue -> IO ZValue) -> ZState -> ZState -> IO (Either String ZState)
-doPrim3 f st next =
-  case st.argStack of
-    (a :: b :: c :: rest) => do
-      result <- f a b c
-      pure (Right ({ accu := result, argStack := rest } next))
-    _ => pure (Left "PRIM: not enough args (need 3)")
-
-||| Dispatch a PRIM instruction by matching the PrimFn to determine arity.
-dispatchPrim : ZState -> ZState -> {0 arity : Nat} -> PrimFn arity -> IO (Either String ZState)
--- Arity 1 ops
-dispatchPrim st next (Neg ty)        = doPrim1 (\a => execPrim (Neg ty) [a]) st next
-dispatchPrim st next StrLength       = doPrim1 (\a => execPrim StrLength [a]) st next
-dispatchPrim st next StrHead         = doPrim1 (\a => execPrim StrHead [a]) st next
-dispatchPrim st next StrTail         = doPrim1 (\a => execPrim StrTail [a]) st next
-dispatchPrim st next StrReverse      = doPrim1 (\a => execPrim StrReverse [a]) st next
-dispatchPrim st next DoubleExp       = doPrim1 (\a => execPrim DoubleExp [a]) st next
-dispatchPrim st next DoubleLog       = doPrim1 (\a => execPrim DoubleLog [a]) st next
-dispatchPrim st next DoubleSin       = doPrim1 (\a => execPrim DoubleSin [a]) st next
-dispatchPrim st next DoubleCos       = doPrim1 (\a => execPrim DoubleCos [a]) st next
-dispatchPrim st next DoubleTan       = doPrim1 (\a => execPrim DoubleTan [a]) st next
-dispatchPrim st next DoubleASin      = doPrim1 (\a => execPrim DoubleASin [a]) st next
-dispatchPrim st next DoubleACos      = doPrim1 (\a => execPrim DoubleACos [a]) st next
-dispatchPrim st next DoubleATan      = doPrim1 (\a => execPrim DoubleATan [a]) st next
-dispatchPrim st next DoubleSqrt      = doPrim1 (\a => execPrim DoubleSqrt [a]) st next
-dispatchPrim st next DoubleFloor     = doPrim1 (\a => execPrim DoubleFloor [a]) st next
-dispatchPrim st next DoubleCeiling   = doPrim1 (\a => execPrim DoubleCeiling [a]) st next
-dispatchPrim st next (Cast f t)      = doPrim1 (\a => execPrim (Cast f t) [a]) st next
--- Arity 2 ops
-dispatchPrim st next (Add ty)        = doPrim2 (\a, b => execPrim (Add ty) [a, b]) st next
-dispatchPrim st next (Sub ty)        = doPrim2 (\a, b => execPrim (Sub ty) [a, b]) st next
-dispatchPrim st next (Mul ty)        = doPrim2 (\a, b => execPrim (Mul ty) [a, b]) st next
-dispatchPrim st next (Div ty)        = doPrim2 (\a, b => execPrim (Div ty) [a, b]) st next
-dispatchPrim st next (Mod ty)        = doPrim2 (\a, b => execPrim (Mod ty) [a, b]) st next
-dispatchPrim st next (ShiftL ty)     = doPrim2 (\a, b => execPrim (ShiftL ty) [a, b]) st next
-dispatchPrim st next (ShiftR ty)     = doPrim2 (\a, b => execPrim (ShiftR ty) [a, b]) st next
-dispatchPrim st next (BAnd ty)       = doPrim2 (\a, b => execPrim (BAnd ty) [a, b]) st next
-dispatchPrim st next (BOr ty)        = doPrim2 (\a, b => execPrim (BOr ty) [a, b]) st next
-dispatchPrim st next (BXOr ty)       = doPrim2 (\a, b => execPrim (BXOr ty) [a, b]) st next
-dispatchPrim st next (LT ty)        = doPrim2 (\a, b => execPrim (LT ty) [a, b]) st next
-dispatchPrim st next (LTE ty)       = doPrim2 (\a, b => execPrim (LTE ty) [a, b]) st next
-dispatchPrim st next (EQ ty)        = doPrim2 (\a, b => execPrim (EQ ty) [a, b]) st next
-dispatchPrim st next (GTE ty)       = doPrim2 (\a, b => execPrim (GTE ty) [a, b]) st next
-dispatchPrim st next (GT ty)        = doPrim2 (\a, b => execPrim (GT ty) [a, b]) st next
-dispatchPrim st next StrIndex        = doPrim2 (\a, b => execPrim StrIndex [a, b]) st next
-dispatchPrim st next StrCons         = doPrim2 (\a, b => execPrim StrCons [a, b]) st next
-dispatchPrim st next StrAppend       = doPrim2 (\a, b => execPrim StrAppend [a, b]) st next
-dispatchPrim st next DoublePow       = doPrim2 (\a, b => execPrim DoublePow [a, b]) st next
-dispatchPrim st next Crash           = doPrim2 (\a, b => execPrim Crash [a, b]) st next
--- Arity 3 ops
-dispatchPrim st next StrSubstr       = doPrim3 (\a, b, c => execPrim StrSubstr [a, b, c]) st next
-dispatchPrim st next BelieveMe       = doPrim3 (\a, b, c => execPrim BelieveMe [a, b, c]) st next
-
-||| Execute one step of the ZAM.
-||| Returns Nothing when execution should stop.
-step : ZState -> IO (Either String ZState)
-step st = do
-  Just inst <- fetchInst st
-    | Nothing => pure (Left ("PC out of bounds: " ++ show st.pc))
-  let next : ZState = { pc := st.pc + 1 } st
-  case inst of
-    ACCESS slot =>
-      case drop (cast {to=Nat} slot) st.env of
-        (v :: _) => pure (Right ({ accu := v } next))
-        [] => pure (Left ("ACCESS out of bounds: slot " ++ show slot))
-
-    ASSIGN slot =>
-      -- Replace env[slot] with accu
-      let (pre, rest) = splitAt (cast {to=Nat} slot) st.env in
-      case rest of
-        (_ :: post) => pure (Right ({ env := pre ++ (st.accu :: post) } next))
-        [] => pure (Left ("ASSIGN out of bounds: slot " ++ show slot))
-
-    LET => pure (Right ({ env := st.env ++ [st.accu] } next))
-
-    ENDLET n =>
-      let envLen = length st.env in
-      pure (Right ({ env := take (minus envLen n) st.env } next))
-
-    GRAB =>
-      case st.argStack of
-        (arg :: rest) =>
-          pure (Right ({ env := st.env ++ [arg], argStack := rest } next))
-        [] =>
-          -- Partial application: create closure pointing to THIS grab,
-          -- so re-entry consumes the next provided arg.
-          let closure = VClosure st.pc st.env [] in
-          case st.retStack of
-            (RetFrame retpc retenv :: MarkFrame :: retRest) =>
-              -- APPLY context: RetFrame above MarkFrame
-              pure (Right ({ accu := closure, pc := retpc, env := retenv,
-                            retStack := retRest } st))
-            (MarkFrame :: RetFrame retpc retenv :: retRest) =>
-              -- TAILAPPLY context: MarkFrame then RetFrame
-              pure (Right ({ accu := closure, pc := retpc, env := retenv,
-                            retStack := retRest } st))
-            (MarkFrame :: retRest) =>
-              -- Mark without RetFrame (top-level apply): just set accu
-              pure (Right ({ accu := closure, retStack := retRest } st))
-            _ => pure (Left "GRAB: empty arg stack and no mark")
-
-    CLOSURE lab sz =>
-      let captured = take sz st.env in
-      pure (Right ({ accu := VClosure lab captured [] } next))
-
-    APPLY =>
-      case st.accu of
-        VClosure cpc cenv pending =>
-          -- Enter the closure; args are already on argStack for GRAB to consume
-          pure (Right ({ pc := cpc, env := cenv,
-                        retStack := RetFrame (st.pc + 1) st.env :: st.retStack } st))
-        _ => pure (Left ("APPLY: not a closure: " ++ show st.accu))
-
-    TAILAPPLY =>
-      case st.accu of
-        VClosure cpc cenv pending =>
-          -- Tail-enter the closure; no return frame needed
-          pure (Right ({ pc := cpc, env := cenv } st))
-        _ => pure (Left ("TAILAPPLY: not a closure: " ++ show st.accu))
-
-    PUSHRETADDR lab =>
-      pure (Right ({ retStack := RetFrame lab st.env :: st.retStack } next))
-
-    RETURN =>
-      case st.retStack of
-        (RetFrame retpc retenv :: rest) =>
-          pure (Right ({ pc := retpc, env := retenv,
-                        retStack := rest } st))
-        (MarkFrame :: rest) =>
-          -- Skip leftover MarkFrame from APPLY context, re-execute RETURN
-          pure (Right ({ retStack := rest } st))
-        [] => pure (Left "RETURN: empty return stack")
-
-    PUSHMARK =>
-      pure (Right ({ retStack := MarkFrame :: st.retStack } next))
-
-    CALL lab nargs => do
-      pure (Right ({ pc := lab, env := [],
-                    retStack := RetFrame (st.pc + 1) st.env :: st.retStack } st))
-
-    TAILCALL lab nargs => do
-      pure (Right ({ pc := lab, env := [] } st))
-
-    MAKEBLOCK tag arity => do
-      case popN arity st.argStack of
-        Just (fields, rest) =>
-          pure (Right ({ accu := VCon (Left tag) fields,
-                        argStack := rest } next))
-        Nothing =>
-          pure (Left ("MAKEBLOCK: not enough args on stack for arity " ++ show arity))
-
-    MAKEBLOCKNAME n arity => do
-      case popN arity st.argStack of
-        Just (fields, rest) =>
-          pure (Right ({ accu := VCon (Right n) fields,
-                        argStack := rest } next))
-        Nothing =>
-          pure (Left ("MAKEBLOCKNAME: not enough args on stack for arity " ++ show arity))
-
-    GETFIELD pos =>
-      case st.accu of
-        VCon _ fields =>
-          case drop pos fields of
-            (v :: _) => pure (Right ({ accu := v } next))
-            [] => pure (Left ("GETFIELD: field " ++ show pos ++ " out of bounds"))
-        _ => pure (Left ("GETFIELD: not a constructor: " ++ show st.accu))
-
-    SWITCH alts def => do
-      let mtag = getTag st.accu
-      case mtag of
-        Just (Left tag) =>
-          case lookup tag alts of
-            Just lab => pure (Right ({ pc := lab } st))
-            Nothing =>
-              case def of
-                Just lab => pure (Right ({ pc := lab } st))
-                Nothing => pure (Left ("SWITCH: no match for tag " ++ show tag))
-        _ =>
-          case def of
-            Just lab => pure (Right ({ pc := lab } st))
-            Nothing => pure (Left "SWITCH: scrutinee is not a tagged constructor")
-
-    SWITCHNAME alts def => do
-      case getTag st.accu of
-        Just (Right n) =>
-          case lookup n alts of
-            Just lab => pure (Right ({ pc := lab } st))
-            Nothing =>
-              case def of
-                Just lab => pure (Right ({ pc := lab } st))
-                Nothing => pure (Left ("SWITCHNAME: no match for " ++ show n))
-        _ =>
-          case def of
-            Just lab => pure (Right ({ pc := lab } st))
-            Nothing => pure (Left "SWITCHNAME: scrutinee is not a named constructor")
-
-    CONSTSWITCH alts def =>
-      case findConstMatch st.accu alts of
-        Just lab => pure (Right ({ pc := lab } st))
-        Nothing =>
-          case def of
-            Just lab => pure (Right ({ pc := lab } st))
-            Nothing => pure (Left "CONSTSWITCH: no match")
-
-    CONST c => pure (Right ({ accu := constToVal c } next))
-
-    NULL => pure (Right ({ accu := VNull } next))
-
-    PRIM op => dispatchPrim st next op
-
-    EXTPRIM n nargs => do
-      case popN nargs st.argStack of
-        Just (args, rest) => do
-          result <- execExtPrim n args
-          pure (Right ({ accu := result, argStack := rest } next))
-        Nothing => pure (Left ("EXTPRIM: not enough args for " ++ show n))
-
-    PUSH => pure (Right ({ argStack := st.accu :: st.argStack } next))
-
-    POP =>
-      case st.argStack of
-        (v :: rest) => pure (Right ({ accu := v, argStack := rest } next))
-        [] => pure (Left "POP: empty stack")
-
-    JUMP lab => pure (Right ({ pc := lab } st))
-
-    STOP => pure (Left "STOP")
-
-    ERROR msg => pure (Left ("ERROR: " ++ msg))
-
 ------------------------------------------------------------------------
--- Main execution loop
+-- PRIM dispatch
 ------------------------------------------------------------------------
 
-||| Run the ZAM until it stops or runs out of fuel.
+doPrim : {0 arity : Nat} -> PrimFn arity -> List ZValue -> IO (Either String (ZValue, List ZValue))
+doPrim (Neg ty) (a :: rest) = do r <- execPrim (Neg ty) [a]; pure (Right (r, rest))
+doPrim StrLength (a :: rest) = do r <- execPrim StrLength [a]; pure (Right (r, rest))
+doPrim StrHead (a :: rest) = do r <- execPrim StrHead [a]; pure (Right (r, rest))
+doPrim StrTail (a :: rest) = do r <- execPrim StrTail [a]; pure (Right (r, rest))
+doPrim StrReverse (a :: rest) = do r <- execPrim StrReverse [a]; pure (Right (r, rest))
+doPrim DoubleExp (a :: rest) = do r <- execPrim DoubleExp [a]; pure (Right (r, rest))
+doPrim DoubleLog (a :: rest) = do r <- execPrim DoubleLog [a]; pure (Right (r, rest))
+doPrim DoubleSin (a :: rest) = do r <- execPrim DoubleSin [a]; pure (Right (r, rest))
+doPrim DoubleCos (a :: rest) = do r <- execPrim DoubleCos [a]; pure (Right (r, rest))
+doPrim DoubleTan (a :: rest) = do r <- execPrim DoubleTan [a]; pure (Right (r, rest))
+doPrim DoubleASin (a :: rest) = do r <- execPrim DoubleASin [a]; pure (Right (r, rest))
+doPrim DoubleACos (a :: rest) = do r <- execPrim DoubleACos [a]; pure (Right (r, rest))
+doPrim DoubleATan (a :: rest) = do r <- execPrim DoubleATan [a]; pure (Right (r, rest))
+doPrim DoubleSqrt (a :: rest) = do r <- execPrim DoubleSqrt [a]; pure (Right (r, rest))
+doPrim DoubleFloor (a :: rest) = do r <- execPrim DoubleFloor [a]; pure (Right (r, rest))
+doPrim DoubleCeiling (a :: rest) = do r <- execPrim DoubleCeiling [a]; pure (Right (r, rest))
+doPrim (Cast f t) (a :: rest) = do r <- execPrim (Cast f t) [a]; pure (Right (r, rest))
+doPrim (Add ty) (a :: b :: rest) = do r <- execPrim (Add ty) [a, b]; pure (Right (r, rest))
+doPrim (Sub ty) (a :: b :: rest) = do r <- execPrim (Sub ty) [a, b]; pure (Right (r, rest))
+doPrim (Mul ty) (a :: b :: rest) = do r <- execPrim (Mul ty) [a, b]; pure (Right (r, rest))
+doPrim (Div ty) (a :: b :: rest) = do r <- execPrim (Div ty) [a, b]; pure (Right (r, rest))
+doPrim (Mod ty) (a :: b :: rest) = do r <- execPrim (Mod ty) [a, b]; pure (Right (r, rest))
+doPrim (ShiftL ty) (a :: b :: rest) = do r <- execPrim (ShiftL ty) [a, b]; pure (Right (r, rest))
+doPrim (ShiftR ty) (a :: b :: rest) = do r <- execPrim (ShiftR ty) [a, b]; pure (Right (r, rest))
+doPrim (BAnd ty) (a :: b :: rest) = do r <- execPrim (BAnd ty) [a, b]; pure (Right (r, rest))
+doPrim (BOr ty) (a :: b :: rest) = do r <- execPrim (BOr ty) [a, b]; pure (Right (r, rest))
+doPrim (BXOr ty) (a :: b :: rest) = do r <- execPrim (BXOr ty) [a, b]; pure (Right (r, rest))
+doPrim (LT ty) (a :: b :: rest) = do r <- execPrim (LT ty) [a, b]; pure (Right (r, rest))
+doPrim (LTE ty) (a :: b :: rest) = do r <- execPrim (LTE ty) [a, b]; pure (Right (r, rest))
+doPrim (EQ ty) (a :: b :: rest) = do r <- execPrim (EQ ty) [a, b]; pure (Right (r, rest))
+doPrim (GTE ty) (a :: b :: rest) = do r <- execPrim (GTE ty) [a, b]; pure (Right (r, rest))
+doPrim (GT ty) (a :: b :: rest) = do r <- execPrim (GT ty) [a, b]; pure (Right (r, rest))
+doPrim StrIndex (a :: b :: rest) = do r <- execPrim StrIndex [a, b]; pure (Right (r, rest))
+doPrim StrCons (a :: b :: rest) = do r <- execPrim StrCons [a, b]; pure (Right (r, rest))
+doPrim StrAppend (a :: b :: rest) = do r <- execPrim StrAppend [a, b]; pure (Right (r, rest))
+doPrim DoublePow (a :: b :: rest) = do r <- execPrim DoublePow [a, b]; pure (Right (r, rest))
+doPrim Crash (a :: b :: rest) = do r <- execPrim Crash [a, b]; pure (Right (r, rest))
+doPrim StrSubstr (a :: b :: c :: rest) = do r <- execPrim StrSubstr [a, b, c]; pure (Right (r, rest))
+doPrim BelieveMe (a :: b :: c :: rest) = do r <- execPrim BelieveMe [a, b, c]; pure (Right (r, rest))
+doPrim _ _ = pure (Left "PRIM: not enough args")
+
+------------------------------------------------------------------------
+-- Execution engine
+------------------------------------------------------------------------
+
+||| Handle RETURN: walk the return stack, skipping MarkFrames.
+doReturn : List Frame -> Maybe (Label, List ZValue, List Frame)
+doReturn (RetFrame retpc savedEnv :: rest) = Just (retpc, savedEnv, rest)
+doReturn (MarkFrame :: rest) = doReturn rest
+doReturn [] = Nothing
+
+||| Run the ZAM. State is passed as separate arguments to avoid
+||| record allocation per step.
 export
-run : (maxSteps : Nat) -> ZState -> IO (Either String ZValue)
-run Z st = pure (Left "out of fuel")
-run (S n) st = do
-  result <- step st
-  case result of
-    Left "STOP" => pure (Right st.accu)
-    Left "RETURN: empty return stack" => pure (Right st.accu)
-    Left msg => pure (Left msg)
-    Right st' => run n st'
+run : Int -> ZState -> IO (Either String ZValue)
+run fuel st0 = go fuel st0.accu st0.env st0.argStack st0.retStack st0.pc
+  where
+    codeArr : IOArray ZInst
+    codeArr = st0.code
+
+    go : Int -> (accu : ZValue) -> (env : List ZValue) -> (args : List ZValue)
+       -> (ret : List Frame) -> (pc : Int) -> IO (Either String ZValue)
+    go 0 accu _ _ _ _ = pure (Left "out of fuel")
+    go n accu env args ret pc = do
+      Just inst <- readArray codeArr pc
+        | Nothing => pure (Left ("PC out of bounds: " ++ show pc))
+      let pc1 : Int = pc + 1
+      case inst of
+        ACCESS slot =>
+          case drop (cast {to=Nat} slot) env of
+            (v :: _) => go (n-1) v env args ret pc1
+            [] => pure (Left ("ACCESS out of bounds: slot " ++ show slot))
+
+        ASSIGN slot =>
+          let idx = cast {to=Nat} slot
+              newEnv = take idx env ++ [accu] ++ drop (S idx) env
+          in go (n-1) accu newEnv args ret pc1
+
+        LET => go (n-1) accu (env ++ [accu]) args ret pc1
+
+        ENDLET k => go (n-1) accu (take (minus (length env) k) env) args ret pc1
+
+        GRAB =>
+          case args of
+            (arg :: rest) => go (n-1) accu (env ++ [arg]) rest ret pc1
+            [] =>
+              let closure = VClosure pc env []
+              in case ret of
+                (RetFrame retpc retenv :: MarkFrame :: retRest) =>
+                  go (n-1) closure retenv [] retRest retpc
+                (MarkFrame :: RetFrame retpc retenv :: retRest) =>
+                  go (n-1) closure retenv [] retRest retpc
+                (MarkFrame :: retRest) =>
+                  go (n-1) closure env args retRest pc1
+                _ => pure (Left "GRAB: empty arg stack and no mark")
+
+        CLOSURE lab sz =>
+          go (n-1) (VClosure lab (take sz env) []) env args ret pc1
+
+        APPLY =>
+          case accu of
+            VClosure cpc cenv _ =>
+              go (n-1) accu cenv args (RetFrame pc1 env :: ret) cpc
+            _ => pure (Left ("APPLY: not a closure: " ++ show accu))
+
+        TAILAPPLY =>
+          case accu of
+            VClosure cpc cenv _ => go (n-1) accu cenv args ret cpc
+            _ => pure (Left ("TAILAPPLY: not a closure: " ++ show accu))
+
+        PUSHRETADDR lab =>
+          go (n-1) accu env args (RetFrame lab env :: ret) pc1
+
+        RETURN =>
+          case doReturn ret of
+            Just (retpc, savedEnv, rest) =>
+              go (n-1) accu savedEnv args rest retpc
+            Nothing => pure (Right accu)  -- normal termination
+
+        PUSHMARK => go (n-1) accu env args (MarkFrame :: ret) pc1
+
+        CALL lab nargs =>
+          go (n-1) accu [] args (RetFrame pc1 env :: ret) lab
+
+        TAILCALL lab nargs => go (n-1) accu [] args ret lab
+
+        MAKEBLOCK tag arity =>
+          case popN arity args of
+            Just (fields, rest) =>
+              go (n-1) (VCon (Left tag) fields) env rest ret pc1
+            Nothing =>
+              pure (Left ("MAKEBLOCK: not enough args for arity " ++ show arity))
+
+        MAKEBLOCKNAME nm arity =>
+          case popN arity args of
+            Just (fields, rest) =>
+              go (n-1) (VCon (Right nm) fields) env rest ret pc1
+            Nothing =>
+              pure (Left ("MAKEBLOCKNAME: not enough args for arity " ++ show arity))
+
+        GETFIELD pos =>
+          case accu of
+            VCon _ fields =>
+              case drop pos fields of
+                (v :: _) => go (n-1) v env args ret pc1
+                [] => pure (Left ("GETFIELD: field " ++ show pos ++ " out of bounds"))
+            _ => pure (Left ("GETFIELD: not a constructor: " ++ show accu))
+
+        SWITCH alts def =>
+          case getTag accu of
+            Just (Left tag) =>
+              case lookup tag alts of
+                Just lab => go (n-1) accu env args ret lab
+                Nothing => case def of
+                  Just lab => go (n-1) accu env args ret lab
+                  Nothing => pure (Left ("SWITCH: no match for tag " ++ show tag))
+            _ => case def of
+              Just lab => go (n-1) accu env args ret lab
+              Nothing => pure (Left "SWITCH: not a tagged constructor")
+
+        SWITCHNAME alts def =>
+          case getTag accu of
+            Just (Right nm) =>
+              case lookup nm alts of
+                Just lab => go (n-1) accu env args ret lab
+                Nothing => case def of
+                  Just lab => go (n-1) accu env args ret lab
+                  Nothing => pure (Left ("SWITCHNAME: no match for " ++ show nm))
+            _ => case def of
+              Just lab => go (n-1) accu env args ret lab
+              Nothing => pure (Left "SWITCHNAME: not a named constructor")
+
+        CONSTSWITCH alts def =>
+          case findConstMatch accu alts of
+            Just lab => go (n-1) accu env args ret lab
+            Nothing => case def of
+              Just lab => go (n-1) accu env args ret lab
+              Nothing => pure (Left "CONSTSWITCH: no match")
+
+        CONST c => go (n-1) (constToVal c) env args ret pc1
+
+        NULL => go (n-1) VNull env args ret pc1
+
+        PRIM op => do
+          result <- doPrim op args
+          case result of
+            Right (v, rest) => go (n-1) v env rest ret pc1
+            Left msg => pure (Left msg)
+
+        EXTPRIM nm nargs =>
+          case popN nargs args of
+            Just (as, rest) => do
+              result <- execExtPrim nm as
+              go (n-1) result env rest ret pc1
+            Nothing => pure (Left ("EXTPRIM: not enough args for " ++ show nm))
+
+        PUSH => go (n-1) accu env (accu :: args) ret pc1
+
+        POP =>
+          case args of
+            (v :: rest) => go (n-1) v env rest ret pc1
+            [] => pure (Left "POP: empty stack")
+
+        JUMP lab => go (n-1) accu env args ret lab
+
+        STOP => pure (Right accu)
+
+        ERROR msg => pure (Left ("ERROR: " ++ msg))
+
+------------------------------------------------------------------------
+-- Initialization
+------------------------------------------------------------------------
 
 zipWithIndex : List a -> List (Int, a)
 zipWithIndex = go 0
@@ -572,7 +497,6 @@ zipWithIndex = go 0
     go _ [] = []
     go i (x :: xs) = (i, x) :: go (i + 1) xs
 
-||| Initialize the ZAM state from compiled bytecode.
 export
 initZAM : List ZInst -> SortedMap Name Label -> Label -> IO ZState
 initZAM insts globals entryPoint = do
@@ -589,5 +513,4 @@ initZAM insts globals entryPoint = do
     , code = codeArr
     , codeLen = len
     , globals = globals
-    , fuel = 100000000  -- 100M steps
     }

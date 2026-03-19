@@ -38,7 +38,7 @@ executeZAM c s tmpDir tm = do
     Just entryLab => do
       -- Initialize and run the ZAM
       st <- coreLift $ initZAM code labels entryLab
-      result <- coreLift $ run 10000000000 st  -- 10B steps
+      result <- coreLift $ run 2000000000 st  -- 2B steps (Int range)
       case result of
         Left err =>
           -- ERROR: messages are deliberate program crashes (holes, Crash prim)
