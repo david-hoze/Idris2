@@ -486,6 +486,36 @@ run fuel st0 = go fuel st0.accu st0.env st0.argStack st0.retStack st0.pc
 
         ERROR msg => pure (Left ("ERROR: " ++ msg))
 
+        -- Superinstructions (expanded for interpreter)
+        ACCESS_PUSH slot =>
+          case drop (cast {to=Nat} slot) env of
+            (v :: _) => go (n-1) v env (v :: args) ret pc1
+            [] => pure (Left ("ACCESS_PUSH out of bounds: slot " ++ show slot))
+
+        CONST_INT_LET v =>
+          let val = VBigInt v
+          in go (n-1) val (env ++ [val]) args ret pc1
+
+        ACCESS0 =>
+          case env of
+            (v :: _) => go (n-1) v env args ret pc1
+            [] => pure (Left "ACCESS0 out of bounds")
+
+        ACCESS1 =>
+          case drop 1 env of
+            (v :: _) => go (n-1) v env args ret pc1
+            [] => pure (Left "ACCESS1 out of bounds")
+
+        ACCESS0_PUSH =>
+          case env of
+            (v :: _) => go (n-1) v env (v :: args) ret pc1
+            [] => pure (Left "ACCESS0_PUSH out of bounds")
+
+        ACCESS1_PUSH =>
+          case drop 1 env of
+            (v :: _) => go (n-1) v env (v :: args) ret pc1
+            [] => pure (Left "ACCESS1_PUSH out of bounds")
+
 ------------------------------------------------------------------------
 -- Initialization
 ------------------------------------------------------------------------

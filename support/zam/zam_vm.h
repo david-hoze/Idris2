@@ -56,6 +56,14 @@ enum ZamOpcode {
     ZOP_CONST_STRING  = 0x1F,   // uint32 string_pool_id
     ZOP_CONST_CHAR    = 0x20,   // uint32 codepoint
     ZOP_CONST_WORLD   = 0x21,   // (none)
+
+    // --- Superinstructions (fused common patterns) ---
+    ZOP_ACCESS_PUSH   = 0x30,   // uint16 slot — ACCESS slot; PUSH
+    ZOP_CONST_INT_LET = 0x31,   // int64 — CONST_INT v; LET
+    ZOP_ACCESS0       = 0x32,   // (none) — ACCESS 0
+    ZOP_ACCESS1       = 0x33,   // (none) — ACCESS 1
+    ZOP_ACCESS0_PUSH  = 0x34,   // (none) — ACCESS 0; PUSH
+    ZOP_ACCESS1_PUSH  = 0x35,   // (none) — ACCESS 1; PUSH
 };
 
 // -----------------------------------------------------------------------
@@ -208,11 +216,14 @@ static inline double zam_read_f64(const uint8_t *code, uint32_t *pc) {
 // VM state
 // -----------------------------------------------------------------------
 
+#define ZFRAME_INLINE_ENV 4
+
 typedef struct ZFrame {
     enum { FRAME_RET, FRAME_MARK } type;
     uint32_t pc;            // return address (byte offset)
-    Value **env;            // saved environment (owned, shallow-copied)
+    Value **env;            // heap-allocated env (NULL if using inline)
     int env_size;
+    Value *env_inline[ZFRAME_INLINE_ENV]; // inline storage for small envs
 } ZFrame;
 
 #define ZAM_CLOSURE_TAG 40
@@ -298,17 +309,40 @@ static inline void zam_ret_push(ZVM *vm, ZFrame frame) {
     vm->ret_stack[vm->ret_top++] = frame;
 }
 
-// Save current env: shallow-copy with refcount increment
-static inline Value **zam_save_env(ZVM *vm) {
-    if (vm->env_size == 0) return NULL;
-    Value **saved = malloc(vm->env_size * sizeof(Value*));
-    for (int i = 0; i < vm->env_size; i++) {
-        saved[i] = idris2_newReference(vm->env[i]);
+// Save current env into a ZFrame (uses inline storage for small envs)
+static inline void zam_save_env_to_frame(ZVM *vm, ZFrame *frame) {
+    frame->env_size = vm->env_size;
+    if (vm->env_size == 0) {
+        frame->env = NULL;
+    } else if (vm->env_size <= ZFRAME_INLINE_ENV) {
+        frame->env = NULL;  // flag: using inline storage
+        for (int i = 0; i < vm->env_size; i++) {
+            frame->env_inline[i] = idris2_newReference(vm->env[i]);
+        }
+    } else {
+        frame->env = malloc(vm->env_size * sizeof(Value*));
+        for (int i = 0; i < vm->env_size; i++) {
+            frame->env[i] = idris2_newReference(vm->env[i]);
+        }
     }
-    return saved;
 }
 
-// Free a saved env
+// Get the env pointer from a frame (inline or heap)
+static inline Value **zam_frame_env(ZFrame *f) {
+    if (f->env) return f->env;
+    return f->env_inline;
+}
+
+// Free a frame's saved env
+static inline void zam_free_frame_env(ZFrame *f) {
+    Value **env = zam_frame_env(f);
+    for (int i = 0; i < f->env_size; i++) {
+        idris2_removeReference(env[i]);
+    }
+    if (f->env) free(f->env);  // only free if heap-allocated
+}
+
+// Free the VM's current env (always heap-allocated)
 static inline void zam_free_env(Value **env, int size) {
     if (!env) return;
     for (int i = 0; i < size; i++) {

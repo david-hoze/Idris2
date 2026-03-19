@@ -104,16 +104,39 @@ ZVM *zam_load(const char *filename) {
 // RETURN helper
 // -----------------------------------------------------------------------
 
+// Restore VM env from a frame (copies inline data, transfers heap ownership)
+static inline void zam_restore_env_from_frame(ZVM *vm, ZFrame *f) {
+    // Free current env entries (but reuse array if possible)
+    for (int i = 0; i < vm->env_size; i++) {
+        idris2_removeReference(vm->env[i]);
+    }
+    if (f->env_size == 0) {
+        // Nothing to restore
+        vm->env_size = 0;
+    } else if (f->env) {
+        // Heap-allocated: transfer ownership
+        free(vm->env);
+        vm->env = f->env;
+        vm->env_size = f->env_size;
+        vm->env_cap = f->env_size;
+        f->env = NULL;
+    } else {
+        // Inline: copy to VM env (ensure capacity)
+        if (f->env_size > vm->env_cap) {
+            vm->env_cap = f->env_size;
+            vm->env = realloc(vm->env, vm->env_cap * sizeof(Value*));
+        }
+        memcpy(vm->env, f->env_inline, f->env_size * sizeof(Value*));
+        vm->env_size = f->env_size;
+    }
+}
+
 static inline int zam_do_return(ZVM *vm) {
     while (vm->ret_top > 0) {
         ZFrame *f = &vm->ret_stack[--vm->ret_top];
         if (f->type == FRAME_RET) {
-            // Free current env
-            zam_free_env(vm->env, vm->env_size);
             vm->pc = f->pc;
-            vm->env = f->env;
-            vm->env_size = f->env_size;
-            vm->env_cap = f->env_size;  // tight fit
+            zam_restore_env_from_frame(vm, f);
             return 1;  // success
         }
         // FRAME_MARK: skip
@@ -127,6 +150,42 @@ static inline int zam_do_return(ZVM *vm) {
 
 #if defined(__GNUC__) || defined(__clang__)
 #define ZAM_USE_COMPUTED_GOTO
+#endif
+
+#ifdef ZAM_PROFILE
+static uint64_t op_counts[64];
+static uint64_t total_ops;
+static const char *op_names[64] = {
+    [0x00] = "ACCESS",    [0x01] = "ASSIGN",    [0x02] = "LET",
+    [0x03] = "ENDLET",    [0x04] = "GRAB",      [0x05] = "CLOSURE",
+    [0x06] = "APPLY",     [0x07] = "TAILAPPLY",
+    [0x08] = "PUSHRETADDR",[0x09] = "RETURN",   [0x0A] = "PUSHMARK",
+    [0x0B] = "CALL",      [0x0C] = "TAILCALL",  [0x0D] = "MAKEBLOCK",
+    [0x0E] = "MAKEBLOCKNAME",[0x0F] = "GETFIELD",
+    [0x10] = "SWITCH",    [0x11] = "SWITCHNAME",[0x12] = "CONSTSWITCH",
+    [0x13] = "PRIM",      [0x14] = "EXTPRIM",   [0x15] = "PUSH",
+    [0x16] = "POP",       [0x17] = "JUMP",      [0x18] = "STOP",
+    [0x19] = "ERROR",     [0x1A] = "NULL",
+    [0x1C] = "CONST_INT", [0x1D] = "CONST_BIGINT",
+    [0x1E] = "CONST_DOUBLE",[0x1F] = "CONST_STRING",
+    [0x20] = "CONST_CHAR",[0x21] = "CONST_WORLD",
+    [0x30] = "ACCESS_PUSH",[0x31] = "CONST_INT_LET",
+    [0x32] = "ACCESS0",   [0x33] = "ACCESS1",
+    [0x34] = "ACCESS0_PUSH",[0x35] = "ACCESS1_PUSH",
+};
+void zam_print_profile(void) {
+    fprintf(stderr, "\n=== ZAM Profile (total ops: %llu) ===\n", (unsigned long long)total_ops);
+    for (int i = 0; i < 64; i++) {
+        if (op_counts[i] > 0 && op_names[i]) {
+            fprintf(stderr, "  %-15s %12llu  (%5.2f%%)\n",
+                    op_names[i], (unsigned long long)op_counts[i],
+                    100.0 * op_counts[i] / total_ops);
+        }
+    }
+}
+#define ZAM_COUNT(op) do { op_counts[op]++; total_ops++; } while(0)
+#else
+#define ZAM_COUNT(op) ((void)0)
 #endif
 
 void zam_run(ZVM *vm) {
@@ -168,15 +227,27 @@ void zam_run(ZVM *vm) {
         [ZOP_CONST_STRING]  = &&op_const_string,
         [ZOP_CONST_CHAR]    = &&op_const_char,
         [ZOP_CONST_WORLD]   = &&op_const_world,
+        // Superinstructions
+        [ZOP_ACCESS_PUSH]   = &&op_access_push,
+        [ZOP_CONST_INT_LET] = &&op_const_int_let,
+        [ZOP_ACCESS0]       = &&op_access0,
+        [ZOP_ACCESS1]       = &&op_access1,
+        [ZOP_ACCESS0_PUSH]  = &&op_access0_push,
+        [ZOP_ACCESS1_PUSH]  = &&op_access1_push,
     };
 
+#ifdef ZAM_PROFILE
+    #define NEXT do { uint8_t _op = vm->code[vm->pc++]; ZAM_COUNT(_op); goto *dispatch[_op]; } while(0)
+#else
     #define NEXT goto *dispatch[vm->code[vm->pc++]]
+#endif
 
 #else
     // Fallback: switch-based dispatch
     #define NEXT continue
     for (;;) {
     uint8_t opcode = vm->code[vm->pc++];
+    ZAM_COUNT(opcode);
     switch (opcode) {
 
 #endif
@@ -232,23 +303,15 @@ void zam_run(ZVM *vm) {
                 ZFrame *top = &vm->ret_stack[vm->ret_top - 1];
                 ZFrame *next = &vm->ret_stack[vm->ret_top - 2];
                 if (top->type == FRAME_RET && next->type == FRAME_MARK) {
-                    // Pop both and return to ret frame
                     vm->ret_top -= 2;
-                    zam_free_env(vm->env, vm->env_size);
                     vm->pc = top->pc;
-                    vm->env = top->env;
-                    vm->env_size = top->env_size;
-                    vm->env_cap = top->env_size;
+                    zam_restore_env_from_frame(vm, top);
                     NEXT;
                 }
                 if (top->type == FRAME_MARK && next->type == FRAME_RET) {
-                    // Pop both and return to ret frame
                     vm->ret_top -= 2;
-                    zam_free_env(vm->env, vm->env_size);
                     vm->pc = next->pc;
-                    vm->env = next->env;
-                    vm->env_size = next->env_size;
-                    vm->env_cap = next->env_size;
+                    zam_restore_env_from_frame(vm, next);
                     NEXT;
                 }
             }
@@ -277,8 +340,10 @@ void zam_run(ZVM *vm) {
             if (vm->accu && ((Value*)vm->accu)->header.tag == ZAM_CLOSURE_TAG) {
                 ZAM_Closure *clo = (ZAM_Closure *)vm->accu;
                 // Push return frame
-                ZFrame frame = { .type = FRAME_RET, .pc = vm->pc,
-                                 .env = zam_save_env(vm), .env_size = vm->env_size };
+                ZFrame frame;
+                frame.type = FRAME_RET;
+                frame.pc = vm->pc;
+                zam_save_env_to_frame(vm, &frame);
                 zam_ret_push(vm, frame);
                 // Enter closure
                 vm->pc = clo->pc;
@@ -321,8 +386,10 @@ void zam_run(ZVM *vm) {
 
     op_pushretaddr: {
         uint32_t label = zam_read_u32(vm->code, &vm->pc);
-        ZFrame frame = { .type = FRAME_RET, .pc = label,
-                         .env = zam_save_env(vm), .env_size = vm->env_size };
+        ZFrame frame;
+        frame.type = FRAME_RET;
+        frame.pc = label;
+        zam_save_env_to_frame(vm, &frame);
         zam_ret_push(vm, frame);
         NEXT;
     }
@@ -343,8 +410,10 @@ void zam_run(ZVM *vm) {
         uint16_t nargs = zam_read_u16(vm->code, &vm->pc);
         (void)nargs;
         // Save current env and push return frame
-        ZFrame frame = { .type = FRAME_RET, .pc = vm->pc,
-                         .env = zam_save_env(vm), .env_size = vm->env_size };
+        ZFrame frame;
+        frame.type = FRAME_RET;
+        frame.pc = vm->pc;
+        zam_save_env_to_frame(vm, &frame);
         zam_ret_push(vm, frame);
         // Reset env and jump
         vm->env_size = 0;
@@ -526,6 +595,53 @@ void zam_run(ZVM *vm) {
 
     op_prim: {
         uint16_t prim_id = zam_read_u16(vm->code, &vm->pc);
+        // Inline fixnum fast path for Integer binary ops
+        if (prim_id < 240 && (prim_id & 0xF) == ZAM_TYPE_INTEGER && vm->arg_top >= 2) {
+            Value *a = vm->arg_stack[vm->arg_top - 1];
+            Value *b = vm->arg_stack[vm->arg_top - 2];
+            if (IDRIS2_IS_FIXNUM(a) && IDRIS2_IS_FIXNUM(b)) {
+                int64_t av = IDRIS2_FIXNUM_VAL(a);
+                int64_t bv = IDRIS2_FIXNUM_VAL(b);
+                Value *r = NULL;
+                switch (prim_id >> 4) {
+                    case ZAM_PRIM_ADD: {
+                        int64_t rv;
+                        if (!__builtin_add_overflow(av, bv, &rv))
+                            r = idris2_mkInteger_from_int64(rv);
+                        break;
+                    }
+                    case ZAM_PRIM_SUB: {
+                        int64_t rv;
+                        if (!__builtin_sub_overflow(av, bv, &rv))
+                            r = idris2_mkInteger_from_int64(rv);
+                        break;
+                    }
+                    case ZAM_PRIM_MUL: {
+                        int64_t rv;
+                        if (!__builtin_mul_overflow(av, bv, &rv))
+                            r = idris2_mkInteger_from_int64(rv);
+                        break;
+                    }
+                    case ZAM_PRIM_LT:
+                        r = idris2_mkBool(av < bv ? 1 : 0); break;
+                    case ZAM_PRIM_LTE:
+                        r = idris2_mkBool(av <= bv ? 1 : 0); break;
+                    case ZAM_PRIM_EQ:
+                        r = idris2_mkBool(av == bv ? 1 : 0); break;
+                    case ZAM_PRIM_GTE:
+                        r = idris2_mkBool(av >= bv ? 1 : 0); break;
+                    case ZAM_PRIM_GT:
+                        r = idris2_mkBool(av > bv ? 1 : 0); break;
+                }
+                if (r) {
+                    vm->arg_top -= 2;  // no removeRef needed for fixnums
+                    idris2_removeReference(vm->accu);
+                    vm->accu = r;
+                    NEXT;
+                }
+            }
+        }
+        // Slow path: full dispatch
         Value *result = zam_do_prim(vm, prim_id);
         idris2_removeReference(vm->accu);
         vm->accu = result;
@@ -687,6 +803,53 @@ void zam_run(ZVM *vm) {
         NEXT;
     }
 
+    // --- Superinstructions ---
+
+    op_access_push: {
+        uint16_t slot = zam_read_u16(vm->code, &vm->pc);
+        Value *val = (slot < (uint16_t)vm->env_size) ? vm->env[slot] : NULL;
+        idris2_removeReference(vm->accu);
+        vm->accu = idris2_newReference(val);
+        zam_arg_push(vm, idris2_newReference(val));
+        NEXT;
+    }
+
+    op_const_int_let: {
+        int64_t val = zam_read_i64(vm->code, &vm->pc);
+        idris2_removeReference(vm->accu);
+        vm->accu = idris2_mkInteger_from_int64(val);
+        zam_env_push(vm, idris2_newReference(vm->accu));
+        NEXT;
+    }
+
+    op_access0: {
+        idris2_removeReference(vm->accu);
+        vm->accu = (vm->env_size > 0) ? idris2_newReference(vm->env[0]) : NULL;
+        NEXT;
+    }
+
+    op_access1: {
+        idris2_removeReference(vm->accu);
+        vm->accu = (vm->env_size > 1) ? idris2_newReference(vm->env[1]) : NULL;
+        NEXT;
+    }
+
+    op_access0_push: {
+        Value *val = (vm->env_size > 0) ? vm->env[0] : NULL;
+        idris2_removeReference(vm->accu);
+        vm->accu = idris2_newReference(val);
+        zam_arg_push(vm, idris2_newReference(val));
+        NEXT;
+    }
+
+    op_access1_push: {
+        Value *val = (vm->env_size > 1) ? vm->env[1] : NULL;
+        idris2_removeReference(vm->accu);
+        vm->accu = idris2_newReference(val);
+        zam_arg_push(vm, idris2_newReference(val));
+        NEXT;
+    }
+
 #ifndef ZAM_USE_COMPUTED_GOTO
     default:
         fprintf(stderr, "Unknown opcode 0x%02x at pc=%u\n", opcode, vm->pc - 1);
@@ -712,7 +875,7 @@ void zam_free(ZVM *vm) {
     // Free ret stack
     for (int i = 0; i < vm->ret_top; i++) {
         if (vm->ret_stack[i].type == FRAME_RET) {
-            zam_free_env(vm->ret_stack[i].env, vm->ret_stack[i].env_size);
+            zam_free_frame_env(&vm->ret_stack[i]);
         }
     }
     free(vm->ret_stack);

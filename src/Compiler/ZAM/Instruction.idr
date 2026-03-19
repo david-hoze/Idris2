@@ -80,6 +80,14 @@ data ZInst : Type where
   STOP      : ZInst                     -- halt execution
   ERROR     : String -> ZInst           -- runtime error
 
+  -- Superinstructions (emitted by peephole optimizer)
+  ACCESS_PUSH   : (slot : Int) -> ZInst     -- ACCESS slot; PUSH
+  CONST_INT_LET : Integer -> ZInst          -- CONST_INT v; LET
+  ACCESS0       : ZInst                     -- ACCESS 0
+  ACCESS1       : ZInst                     -- ACCESS 1
+  ACCESS0_PUSH  : ZInst                     -- ACCESS 0; PUSH
+  ACCESS1_PUSH  : ZInst                     -- ACCESS 1; PUSH
+
 ||| A compiled function: entry label and the number of arguments it expects.
 public export
 record ZFun where
@@ -124,3 +132,9 @@ Show ZInst where
   show (JUMP lab) = "JUMP @" ++ show lab
   show STOP = "STOP"
   show (ERROR msg) = "ERROR " ++ show msg
+  show (ACCESS_PUSH n) = "ACCESS_PUSH " ++ show n
+  show (CONST_INT_LET i) = "CONST_INT_LET " ++ show i
+  show ACCESS0 = "ACCESS0"
+  show ACCESS1 = "ACCESS1"
+  show ACCESS0_PUSH = "ACCESS0_PUSH"
+  show ACCESS1_PUSH = "ACCESS1_PUSH"

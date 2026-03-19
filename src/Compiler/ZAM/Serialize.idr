@@ -181,6 +181,13 @@ instSize POP               = 1
 instSize (JUMP _)          = 5   -- opcode + uint32
 instSize STOP              = 1
 instSize (ERROR _)         = 5   -- opcode + uint32
+-- Superinstructions
+instSize (ACCESS_PUSH _)   = 3   -- opcode + uint16
+instSize (CONST_INT_LET _) = 9   -- opcode + int64
+instSize ACCESS0           = 1
+instSize ACCESS1           = 1
+instSize ACCESS0_PUSH      = 1
+instSize ACCESS1_PUSH      = 1
 
 ------------------------------------------------------------------------
 -- Label remapping: instruction index → byte offset
@@ -223,6 +230,88 @@ collectStrings insts funLabels sp0 =
       foldl (\s, (n, _) => snd (intern (show n) s)) sp alts
     collectFromInst sp (EXTPRIM n _) = snd (intern (show n) sp)
     collectFromInst sp _ = sp
+
+------------------------------------------------------------------------
+-- Peephole optimization: fuse common patterns into superinstructions
+------------------------------------------------------------------------
+
+||| Try to extract an int64-representable value from a Constant.
+constToInt64 : Constant -> Maybe Integer
+constToInt64 (I i)   = Just (cast i)
+constToInt64 (I8 i)  = Just (cast i)
+constToInt64 (I16 i) = Just (cast i)
+constToInt64 (I32 i) = Just (cast i)
+constToInt64 (I64 i) = Just (cast i)
+constToInt64 (BI i)  = Just i
+constToInt64 (B8 i)  = Just (cast i)
+constToInt64 (B16 i) = Just (cast i)
+constToInt64 (B32 i) = Just (cast i)
+constToInt64 (B64 i) = Just (cast i)
+constToInt64 _       = Nothing
+
+||| Peephole optimization pass. Returns optimized instruction list and
+||| a mapping from old instruction indices to new instruction indices.
+peephole : List ZInst -> (List ZInst, SortedMap Int Int)
+peephole insts = let (acc, m) = go 0 0 [] empty insts
+                 in (reverse acc, m)
+  where
+    go : Int -> Int -> List ZInst -> SortedMap Int Int -> List ZInst
+      -> (List ZInst, SortedMap Int Int)
+    go oldIdx newIdx acc m [] = (acc, insert oldIdx newIdx m)
+    go oldIdx newIdx acc m (ACCESS 0 :: PUSH :: rest) =
+      go (oldIdx + 2) (newIdx + 1) (ACCESS0_PUSH :: acc)
+         (insert (oldIdx + 1) newIdx (insert oldIdx newIdx m)) rest
+    go oldIdx newIdx acc m (ACCESS 1 :: PUSH :: rest) =
+      go (oldIdx + 2) (newIdx + 1) (ACCESS1_PUSH :: acc)
+         (insert (oldIdx + 1) newIdx (insert oldIdx newIdx m)) rest
+    go oldIdx newIdx acc m (ACCESS n :: PUSH :: rest) =
+      go (oldIdx + 2) (newIdx + 1) (ACCESS_PUSH n :: acc)
+         (insert (oldIdx + 1) newIdx (insert oldIdx newIdx m)) rest
+    go oldIdx newIdx acc m (ACCESS 0 :: rest) =
+      go (oldIdx + 1) (newIdx + 1) (ACCESS0 :: acc)
+         (insert oldIdx newIdx m) rest
+    go oldIdx newIdx acc m (ACCESS 1 :: rest) =
+      go (oldIdx + 1) (newIdx + 1) (ACCESS1 :: acc)
+         (insert oldIdx newIdx m) rest
+    go oldIdx newIdx acc m (CONST c :: LET :: rest) =
+      case constToInt64 c of
+        Just v => go (oldIdx + 2) (newIdx + 1) (CONST_INT_LET v :: acc)
+                     (insert (oldIdx + 1) newIdx (insert oldIdx newIdx m)) rest
+        Nothing => go (oldIdx + 1) (newIdx + 1) (CONST c :: acc)
+                      (insert oldIdx newIdx m) (LET :: rest)
+    go oldIdx newIdx acc m (x :: rest) =
+      go (oldIdx + 1) (newIdx + 1) (x :: acc) (insert oldIdx newIdx m) rest
+
+||| Remap a label using the index mapping.
+remapLabel : SortedMap Int Int -> Label -> Label
+remapLabel m lab = fromMaybe lab (lookup lab m)
+
+||| Remap all labels in a single instruction.
+remapInst : SortedMap Int Int -> ZInst -> ZInst
+remapInst m (CLOSURE lab sz) = CLOSURE (remapLabel m lab) sz
+remapInst m (PUSHRETADDR lab) = PUSHRETADDR (remapLabel m lab)
+remapInst m (CALL lab n) = CALL (remapLabel m lab) n
+remapInst m (TAILCALL lab n) = TAILCALL (remapLabel m lab) n
+remapInst m (SWITCH alts def) =
+  SWITCH (map (\(t,l) => (t, remapLabel m l)) alts) (map (remapLabel m) def)
+remapInst m (SWITCHNAME alts def) =
+  SWITCHNAME (map (\(n,l) => (n, remapLabel m l)) alts) (map (remapLabel m) def)
+remapInst m (CONSTSWITCH alts def) =
+  CONSTSWITCH (map (\(c,l) => (c, remapLabel m l)) alts) (map (remapLabel m) def)
+remapInst m (JUMP lab) = JUMP (remapLabel m lab)
+remapInst _ x = x
+
+||| Apply peephole optimization: fuse patterns, then fix up all labels.
+optimizeCode : List ZInst -> SortedMap Name Label -> Label
+            -> (List ZInst, SortedMap Name Label, Label)
+optimizeCode code funLabels entryPoint =
+  let (code', idxMap) = peephole code
+      code'' = map (remapInst idxMap) code'
+      funLabels' = Data.SortedMap.fromList $
+                     map (\(n, l) => (n, remapLabel idxMap l))
+                         (Data.SortedMap.toList funLabels)
+      entryPoint' = remapLabel idxMap entryPoint
+  in (code'', funLabels', entryPoint')
 
 ------------------------------------------------------------------------
 -- Buffer writing
@@ -441,6 +530,17 @@ writeInst buf off lm sp (ERROR msg) = do
   let (idx, _) = intern msg sp
   off <- writeU8 buf off 0x19
   writeU32 buf off idx
+-- Superinstructions
+writeInst buf off lm sp (ACCESS_PUSH slot) = do
+  off <- writeU8 buf off 0x30
+  writeU16 buf off slot
+writeInst buf off lm sp (CONST_INT_LET v) = do
+  off <- writeU8 buf off 0x31
+  writeI64 buf off v
+writeInst buf off lm sp ACCESS0 = writeU8 buf off 0x32
+writeInst buf off lm sp ACCESS1 = writeU8 buf off 0x33
+writeInst buf off lm sp ACCESS0_PUSH = writeU8 buf off 0x34
+writeInst buf off lm sp ACCESS1_PUSH = writeU8 buf off 0x35
 
 ------------------------------------------------------------------------
 -- Top-level serialization
@@ -458,6 +558,9 @@ serializeToFile : (filename : String)
                -> (entryPoint : Label)
                -> Core ()
 serializeToFile filename code funLabels entryPoint = do
+  -- 0. Peephole optimization: fuse common patterns
+  let (code, funLabels, entryPoint) = optimizeCode code funLabels entryPoint
+
   -- 1. Collect strings
   let sp = collectStrings code funLabels emptySP
 

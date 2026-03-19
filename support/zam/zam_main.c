@@ -14,6 +14,10 @@ int main(int argc, char **argv) {
 
     vm->pc = vm->entry_point;
     zam_run(vm);
+#ifdef ZAM_PROFILE
+    extern void zam_print_profile(void);
+    zam_print_profile();
+#endif
     zam_free(vm);
     return 0;
 }
