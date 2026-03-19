@@ -1998,6 +1998,66 @@ parameters {auto fname : OriginDesc} {auto indents : IndentInfo}
                in PMutual [claim, def]
           else PDef (singleton cl)
 
+  -- Python-style class declaration:
+  --   class Name:
+  --     field: Type       → record
+  --     ConstructorName   → enum (data)
+  --     Constructor(args) → ADT (data)
+  pyClass : Rule PDeclNoFC
+  pyClass
+      = do col <- column
+           exactIdent "class"
+           n <- bounds (decorate fname Typ capitalisedName)
+           symbol ":"
+           commit
+           let fc = boundToFC fname n
+           let tyName = n.val
+           members <- blockAfter col (pyBodyMember tyName)
+           buildPyClass fc tyName members
+    where
+      -- A body member: Left = record field, Right = data constructor
+      pyBodyMember : Name -> IndentInfo -> Rule (Either PField PTypeDecl)
+      pyBodyMember tyName idt
+          -- Record field: name: Type (try so it backtracks on uppercase names)
+          = do f <- addFCBounds (do n <- try (decorate fname Function unqualifiedName
+                                               <* decoratedSymbol fname ":")
+                                    ty <- typeExpr pdef fname idt
+                                    pure (Mk ["", top, singleton (MkFCVal EmptyFC (UN (Basic n)))]
+                                              (MkPiBindData Explicit ty)))
+               atEnd idt
+               pure (Left f)
+          -- Data constructor: Name or Name(args)
+        <|> do c <- fcBounds (do cn <- fcBounds (decorate fname Typ capitalisedName)
+                                 args <- option [] $ do
+                                   symbol "("
+                                   as <- sepBy (decoratedSymbol fname ",")
+                                           (do ignore $ optional (try (unqualifiedName <* symbol ":"))
+                                               typeExpr pdef fname idt)
+                                   symbol ")"
+                                   pure as
+                                 let retTy = PRef EmptyFC tyName
+                                 let conTy = foldr (\a, t => PPi EmptyFC top Explicit Nothing a t)
+                                                   retTy args
+                                 pure (MkPTy (singleton ("", cn)) "" conTy))
+               atEnd idt
+               pure (Right c)
+
+      buildPyClass : FC -> Name -> List (Either PField PTypeDecl) -> EmptyRule PDeclNoFC
+      buildPyClass fc tyName members =
+        case partitionEithers members of
+          (fields, []) =>
+            -- All fields → record
+            let conName = UN (Basic ("Mk" ++ nameRoot tyName))
+            in pure (PRecord "" (specified Public) Nothing
+                      (MkPRecord tyName [] []
+                         (Just ("" :+ MkFCVal fc conName))
+                         fields))
+          ([], cons) =>
+            -- All constructors → data
+            pure (PData "" (specified Public) Nothing
+                    (MkPData fc tyName (Just (PType fc)) [] cons))
+          _ => fatalError "Python class cannot mix record fields and constructors"
+
   definition : Rule PDeclNoFC
   definition
       = pyDef
@@ -2044,6 +2104,7 @@ topDecl fname indents
   <|> fcBounds (PClaim <$> localClaim)
   <|> fcBounds (PDirective <$> directive)
   <|> fcBounds implDecl
+  <|> fcBounds pyClass
   <|> fcBounds definition
   <|> fixDecl
   <|> fcBounds ifaceDecl
