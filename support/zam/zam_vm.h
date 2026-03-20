@@ -266,6 +266,10 @@ typedef struct {
     // Entry point
     uint32_t entry_point;
 
+    // Command-line args
+    int prog_argc;
+    char **prog_argv;
+
     // Function table
     uint32_t *func_offsets;
     char **func_names;

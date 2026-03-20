@@ -486,9 +486,18 @@ void zam_run(ZVM *vm) {
     op_switch: {
         uint16_t ncases = zam_read_u16(vm->code, &vm->pc);
         int32_t accu_tag = -1;
-        if (vm->accu && !idris2_vp_is_unboxed(vm->accu) &&
+        if (vm->accu == NULL) {
+            // NULL represents nullary constructors (e.g., Nil, Nothing, Z)
+            accu_tag = 0;
+        } else if (!idris2_vp_is_unboxed(vm->accu) &&
             ((Value*)vm->accu)->header.tag == CONSTRUCTOR_TAG) {
             accu_tag = ((Value_Constructor *)vm->accu)->tag;
+        } else if (((uintptr_t)vm->accu & 3) == 1) {
+            // Small int tag (0b01) — Bool is represented as Int8 (0=False, 1=True)
+            accu_tag = (int32_t)((uintptr_t)vm->accu >> idris2_vp_int_shift);
+        } else if (IDRIS2_IS_FIXNUM(vm->accu)) {
+            // Fixnum Integer (0b11) — used as constructor tag sometimes
+            accu_tag = (int32_t)IDRIS2_FIXNUM_VAL(vm->accu);
         }
         uint32_t target = 0;
         for (int i = 0; i < ncases; i++) {
@@ -552,6 +561,9 @@ void zam_run(ZVM *vm) {
                     int64_t aval;
                     if (IDRIS2_IS_FIXNUM(vm->accu)) {
                         aval = IDRIS2_FIXNUM_VAL(vm->accu);
+                    } else if (((uintptr_t)vm->accu & 3) == 1) {
+                        // Small int tag (0b01) — Bool/Int8/Ordering encoded as tagged int
+                        aval = (int64_t)((uintptr_t)vm->accu >> idris2_vp_int_shift);
                     } else if (!idris2_vp_is_unboxed(vm->accu) &&
                                ((Value*)vm->accu)->header.tag == INTEGER_TAG) {
                         aval = idris2_mpz_get_int64(((Value_Integer*)vm->accu)->i);
@@ -622,6 +634,16 @@ void zam_run(ZVM *vm) {
                             r = idris2_mkInteger_from_int64(rv);
                         break;
                     }
+                    case ZAM_PRIM_DIV:
+                        if (bv != 0) r = idris2_mkInteger_from_int64(av / bv);
+                        break;
+                    case ZAM_PRIM_MOD:
+                        if (bv != 0) {
+                            int64_t rv = av % bv;
+                            if (rv < 0) rv += (bv < 0) ? -bv : bv;
+                            r = idris2_mkInteger_from_int64(rv);
+                        }
+                        break;
                     case ZAM_PRIM_LT:
                         r = idris2_mkBool(av < bv ? 1 : 0); break;
                     case ZAM_PRIM_LTE:
@@ -707,6 +729,64 @@ void zam_run(ZVM *vm) {
                 fflush(stdout);
             }
             result = NULL;
+        } else if (strstr(name, "prim__getArgCount") != NULL) {
+            result = idris2_mkInt32(vm->prog_argc);
+        } else if (strstr(name, "prim__getArg") != NULL) {
+            int idx = (nargs >= 1 && args[0]) ? idris2_vp_to_Int32(args[0]) : 0;
+            if (idx >= 0 && idx < vm->prog_argc) {
+                result = (Value *)idris2_mkString(vm->prog_argv[idx]);
+            } else {
+                result = (Value *)idris2_mkString("");
+            }
+        } else if (strstr(name, "prim__stdin") != NULL) {
+            // Return a file pointer — use NULL as a sentinel for stdin
+            result = NULL;
+        } else if (strstr(name, "fflush") != NULL) {
+            fflush(stdout);
+            result = NULL;
+        } else if (strcmp(name, "Prelude.Types.fastConcat") == 0 ||
+                   strcmp(name, "prelude.fastConcat") == 0) {
+            if (nargs >= 1) {
+                char *s = fastConcat(args[0]);
+                result = (Value *)idris2_mkString(s);
+                free(s);
+            } else {
+                result = (Value *)idris2_mkString("");
+            }
+        }
+        else if (strstr(name, "prim__newIORef") != NULL) {
+            // prim__newIORef(erased_type, initial_value, world)
+            Value *val = (nargs >= 2) ? args[1] : NULL;
+            Value_IORef *ioRef = IDRIS2_NEW_VALUE(Value_IORef);
+            ioRef->header.tag = IOREF_TAG;
+            ioRef->v = idris2_newReference(val);
+            result = (Value *)ioRef;
+        } else if (strstr(name, "prim__readIORef") != NULL) {
+            // prim__readIORef(erased_type, ioref, world)
+            Value *ref = (nargs >= 2) ? args[1] : NULL;
+            if (ref && !idris2_vp_is_unboxed(ref) &&
+                ((Value*)ref)->header.tag == IOREF_TAG) {
+                result = idris2_newReference(((Value_IORef *)ref)->v);
+            } else {
+                result = NULL;
+            }
+        } else if (strstr(name, "prim__writeIORef") != NULL) {
+            // prim__writeIORef(erased_type, ioref, new_value, world)
+            Value *ref = (nargs >= 2) ? args[1] : NULL;
+            Value *new_val = (nargs >= 3) ? args[2] : NULL;
+            if (ref && !idris2_vp_is_unboxed(ref) &&
+                ((Value*)ref)->header.tag == IOREF_TAG) {
+                Value_IORef *ioref = (Value_IORef *)ref;
+                idris2_newReference(new_val);
+                Value *old = ioref->v;
+                ioref->v = new_val;
+                idris2_removeReference(old);
+            }
+            result = NULL;
+        }
+        else {
+            // Unknown extprim
+            fprintf(stderr, "[ZAM] unknown extprim: %s (nargs=%d)\n", name, nargs);
         }
         // For unknown extprims, result stays NULL
 

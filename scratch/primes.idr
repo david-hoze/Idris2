@@ -22,10 +22,12 @@ countPrimes n = go 2 0
       if i > n then acc
       else go (i + 1) (if isPrime i then acc + 1 else acc)
 
+getN : List String -> Integer
+getN (_ :: s :: _) = maybe 100000 id (parsePositive s)
+getN _ = 100000
+
 main : IO ()
 main = do
   args <- getArgs
-  let n = case args of
-            (_ :: s :: _) => maybe 100000 id (parsePositive s)
-            _ => 100000
+  n <- pure (getN args)
   putStrLn ("Primes up to " ++ show n ++ ": " ++ show (countPrimes n))
