@@ -53,6 +53,10 @@ record REPLOpts where
   consoleWidth : Maybe Nat -- Nothing is auto
   color : Bool
   synHighlightOn : Bool
+  -- Cached source content from last successful load.
+  -- When `:l` is called and source matches, skip the full reload pipeline
+  -- (resetContext + buildDeps + readAsMain) to avoid re-deserializing TTCs.
+  lastLoadedSource : Maybe (String, String) -- (filename, source content)
 
 litStyle : Maybe String -> Maybe LiterateStyle
 litStyle = join . map isLitFile
@@ -79,6 +83,7 @@ defaultOpts fname outmode cgs
         , consoleWidth = Nothing
         , color = True
         , synHighlightOn = True
+        , lastLoadedSource = Nothing
         }
   where
     litStyle : Maybe String -> Maybe LiterateStyle

@@ -29,6 +29,7 @@ int idris2_createDir(char *dir) {
 
 typedef struct {
   DIR *dirptr;
+  int lastErrno;  /* saved errno from readdir — RefC clobbers errno */
 } DirInfo;
 
 void *idris2_openDir(char *dir) {
@@ -39,6 +40,7 @@ void *idris2_openDir(char *dir) {
     DirInfo *di = malloc(sizeof(DirInfo));
     IDRIS2_VERIFY(di, "malloc failed");
     di->dirptr = d;
+    di->lastErrno = 0;
 
     return (void *)di;
   }
@@ -61,10 +63,16 @@ char *idris2_nextDirEntry(void *d) {
   // end of stream and failure.
   errno = 0;
   struct dirent *de = readdir(di->dirptr);
+  di->lastErrno = errno;  /* save before RefC runtime clobbers it */
 
   if (de == NULL) {
     return NULL;
   } else {
     return de->d_name;
   }
+}
+
+int idris2_dirEntryErrno(void *d) {
+  DirInfo *di = (DirInfo *)d;
+  return di->lastErrno;
 }

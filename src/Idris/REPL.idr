@@ -841,18 +841,26 @@ loadMainFile : {auto c : Ref Ctxt Defs} ->
                String -> Core REPLResult
 loadMainFile f
     = do update ROpts { evalResultName := Nothing }
-         modIdent <- ctxtPathToNS f
-         resetContext (PhysicalIdrSrc modIdent)
          Right res <- coreLift (readFile f)
             | Left err => do setSource ""
                              pure (ErrorLoadingFile f err)
-         errs <- logTime 1 "Build deps" $ buildDeps f
-         updateErrorLine errs
-         setSource res
-         resetProofState
-         case errs of
-           [] => pure (FileLoaded f)
-           _ => pure (ErrorsBuildingFile f errs)
+         -- Skip full reload if source hasn't changed (avoids re-reading TTCs)
+         opts <- get ROpts
+         let cached = lastLoadedSource opts
+         if cached == Just (f, res)
+            then do resetProofState
+                    pure (FileLoaded f)
+            else do modIdent <- ctxtPathToNS f
+                    resetContext (PhysicalIdrSrc modIdent)
+                    errs <- logTime 1 "Build deps" $ buildDeps f
+                    updateErrorLine errs
+                    setSource res
+                    resetProofState
+                    case errs of
+                      [] => do update ROpts { lastLoadedSource := Just (f, res) }
+                               pure (FileLoaded f)
+                      _ => do update ROpts { lastLoadedSource := Nothing }
+                              pure (ErrorsBuildingFile f errs)
 
 ||| Given a REPLEval mode for evaluation,
 ||| produce the normalization function that normalizes terms

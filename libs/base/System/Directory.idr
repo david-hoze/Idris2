@@ -54,6 +54,9 @@ prim__removeDir : String -> PrimIO ()
          supportNode "dirEntry"
 prim__dirEntry : DirPtr -> PrimIO (Ptr String)
 
+%foreign supportC "idris2_dirEntryErrno"
+prim__dirEntryErrno : DirPtr -> PrimIO Int
+
 ||| Data structure for managing the pointer to a directory.
 export
 data Directory : Type where
@@ -114,9 +117,13 @@ nextDirEntry : HasIO io => Directory -> io (Either FileError (Maybe String))
 nextDirEntry (MkDir d)
     = do res <- primIO (prim__dirEntry d)
          if prim__nullPtr res /= 0
-            then if !(getErrno) /= 0
-                    then returnError
-                    else pure $ Right Nothing
+            then do -- Use saved errno from readdir, not getErrno, because
+                    -- RefC runtime operations clobber errno between
+                    -- the FFI call and here.
+                    e <- primIO (prim__dirEntryErrno d)
+                    if e /= 0
+                       then returnError
+                       else pure $ Right Nothing
             else do let n = prim__getString res
                     if n == "." || n == ".."
                        then assert_total $ nextDirEntry (MkDir d)
