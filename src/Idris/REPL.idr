@@ -16,6 +16,7 @@ import Core.Termination
 import Core.Unify
 import Core.Value
 
+import Core.ContextSnapshot
 import Core.SchemeEval
 
 import Parser.Unlit
@@ -852,15 +853,34 @@ loadMainFile f
                     pure (FileLoaded f)
             else do modIdent <- ctxtPathToNS f
                     resetContext (PhysicalIdrSrc modIdent)
-                    errs <- logTime 1 "Build deps" $ buildDeps f
-                    updateErrorLine errs
-                    setSource res
-                    resetProofState
-                    case errs of
-                      [] => do update ROpts { lastLoadedSource := Just (f, res) }
+                    -- Try loading from context snapshot first
+                    snapshotFile <- getTTCFileName f "snap"
+                    snapshotLoaded <- catch
+                      (logTime 1 "Load snapshot" $ loadSnapshot snapshotFile f res)
+                      (\_ => pure False)
+                    if snapshotLoaded
+                       then do -- Snapshot loaded — just read metadata for interactive editing
+                               mainttm <- getTTCFileName f "ttm"
+                               catch (readFromTTM mainttm) (\_ => pure ())
+                               setSource res
+                               resetProofState
+                               update ROpts { lastLoadedSource := Just (f, res) }
                                pure (FileLoaded f)
-                      _ => do update ROpts { lastLoadedSource := Nothing }
-                              pure (ErrorsBuildingFile f errs)
+                       else do -- Snapshot miss — full build, then save snapshot
+                               -- Reset context again in case snapshot partially loaded
+                               resetContext (PhysicalIdrSrc modIdent)
+                               errs <- logTime 1 "Build deps" $ buildDeps f
+                               updateErrorLine errs
+                               setSource res
+                               resetProofState
+                               case errs of
+                                 [] => do catch (logTime 1 "Save snapshot" $
+                                                   saveSnapshot snapshotFile f res)
+                                                (\_ => pure ())
+                                          update ROpts { lastLoadedSource := Just (f, res) }
+                                          pure (FileLoaded f)
+                                 _ => do update ROpts { lastLoadedSource := Nothing }
+                                         pure (ErrorsBuildingFile f errs)
 
 ||| Given a REPLEval mode for evaluation,
 ||| produce the normalization function that normalizes terms
