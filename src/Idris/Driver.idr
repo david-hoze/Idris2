@@ -3,6 +3,7 @@ module Idris.Driver
 import Compiler.Common
 
 import Core.Binary
+import Core.ContextSnapshot
 import Core.Directory
 import Core.InitPrimitives
 import Core.Metadata
@@ -193,8 +194,13 @@ stMain cgs opts
                setMainFile fname
                result <- case fname of
                     Nothing => logTime 1 "Loading prelude" $ do
-                                 when (not $ noprelude session) $
-                                   readPrelude True
+                                 when (not $ noprelude session) $ do
+                                   bdir <- ttcBuildDirectory
+                                   let preludeSnap = bdir </> "prelude.snap"
+                                   loaded <- loadSnapshot preludeSnap "prelude" "prelude"
+                                   when (not loaded) $ do
+                                     readPrelude True
+                                     saveSnapshot preludeSnap "prelude" "prelude"
                                  pure Done
                     Just f => logTime 1 "Loading main file" $ do
                                 res <- loadMainFile f

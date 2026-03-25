@@ -178,9 +178,10 @@ loadSnapshot : {auto c : Ref Ctxt Defs} ->
                Core Bool
 loadSnapshot snapshotFile sourceFile sourceContent
     = do Right buffer <- coreLift $ readFromFile snapshotFile
-            | Left _ => pure False
+            | Left err => pure False
          bin <- newRef Bin buffer
-         catch (loadFromBin bin) (\_ => pure False)
+         catch (loadFromBin bin)
+               (\err => pure False)
   where
     restoreEntries : Ref Bin Binary -> Int -> Core ()
     restoreEntries bin 0 = pure ()

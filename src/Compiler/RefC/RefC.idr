@@ -308,7 +308,9 @@ removeReuseConstructors : {auto oft : Ref OutfileText Output}
                         -> {auto il : Ref IndentLevel Nat}
                         -> List String
                         -> Core ()
-removeReuseConstructors = applyFunctionToVars "idris2_removeReuseConstructor"
+removeReuseConstructors vars = traverse_ (\v => do
+    emit EmptyFC $ "idris2_removeReuseConstructor(" ++ v ++ ");"
+    emit EmptyFC $ v ++ " = NULL;" ) vars
 
 ||| Extract RigCount of each Pi-bound argument from a function type.
 piMults : Term vars -> List RigCount
@@ -387,11 +389,22 @@ makeClosure : {auto a : Ref ArgCounter Nat}
             -> Nat
             -> Core String
 makeClosure fc n args missing = do
-    let closure = "closure_\{!(getNextCounter)}"
+    let counter = !(getNextCounter)
+    let closure = "closure_\{counter}"
     let nargs = length args
-    emit fc "Value *\{closure} = (Value *)idris2_mkClosure((Value *(*)())\{cName n}, \{show $ nargs + missing}, \{show nargs});"
-    fillArgs !(get EnvTracker) "((Value_Closure*)\{closure})->args" args 0
-    pure closure
+    if nargs == 0
+      then do
+        -- Zero-filled closure: emit as immortal static local singleton.
+        -- Static local in C has file-scope lifetime, initialized once.
+        let arity = nargs + missing
+        let staticName = "idris2_static_clos_\{counter}"
+        emit fc "static struct { Value_header header; void *f; uint8_t arity; uint8_t filled; } \{staticName} = { IDRIS2_STOCKVAL(CLOSURE_TAG), (void*)\{cName n}, \{show arity}, 0 };"
+        emit fc "Value *\{closure} = (Value*)&\{staticName};"
+        pure closure
+      else do
+        emit fc "Value *\{closure} = (Value *)idris2_mkClosure((Value *(*)())\{cName n}, \{show $ nargs + missing}, \{show nargs});"
+        fillArgs !(get EnvTracker) "((Value_Closure*)\{closure})->args" args 0
+        pure closure
 
 -- When changing this number, also change idris2_dispatch_closure in runtime.c.
 -- Increasing this number will worsen stack consumption and increase the codesize of idris2_dispatch_closure.
@@ -841,12 +854,18 @@ cTypeOfCFType CFUnsigned8     = "uint8_t"
 cTypeOfCFType CFUnsigned16    = "uint16_t"
 cTypeOfCFType CFUnsigned32    = "uint32_t"
 cTypeOfCFType CFUnsigned64    = "uint64_t"
+cTypeOfCFType CFInteger       = "void *"
+cTypeOfCFType CFInt8          = "int8_t"
+cTypeOfCFType CFInt16         = "int16_t"
+cTypeOfCFType CFInt32         = "int32_t"
+cTypeOfCFType CFInt64         = "int64_t"
 cTypeOfCFType CFString        = "char *"
 cTypeOfCFType CFDouble        = "double"
 cTypeOfCFType CFChar          = "char"
 cTypeOfCFType CFPtr           = "void *"
 cTypeOfCFType CFGCPtr         = "void *"
 cTypeOfCFType CFBuffer        = "void *"
+cTypeOfCFType CFForeignObj    = "void *"
 cTypeOfCFType CFWorld         = "void *"
 cTypeOfCFType (CFFun x y)     = "void *"
 cTypeOfCFType (CFIORes x)     = "void *"
@@ -885,6 +904,7 @@ data CLang = CLangC | CLangRefC
 extractValue : (cLang : CLang) -> (cfType:CFType) -> (varName:String) -> String
 extractValue _ CFUnit           varName = "NULL"
 extractValue _ CFInt            varName = "(idris2_vp_to_Int64(" ++ varName ++ "))"
+extractValue _ CFInteger        varName = "(void*)" ++ varName
 extractValue _ CFInt8           varName = "(idris2_vp_to_Int8(" ++ varName ++ "))"
 extractValue _ CFInt16          varName = "(idris2_vp_to_Int16(" ++ varName ++ "))"
 extractValue _ CFInt32          varName = "(idris2_vp_to_Int32(" ++ varName ++ "))"
@@ -898,6 +918,7 @@ extractValue _ CFDouble         varName = "(idris2_vp_to_Double(" ++ varName ++ 
 extractValue _ CFChar           varName = "(idris2_vp_to_Char(" ++ varName ++ "))"
 extractValue _ CFPtr            varName = "((Value_Pointer*)" ++ varName ++ ")->p"
 extractValue _ CFGCPtr          varName = "((Value_GCPointer*)" ++ varName ++ ")->p->p"
+extractValue _ CFForeignObj     varName = "((Value_Pointer*)" ++ varName ++ ")->p"
 extractValue CLangC    CFBuffer varName = "((Value_Buffer*)" ++ varName ++ ")->buffer->data"
 extractValue CLangRefC CFBuffer varName = "((Value_Buffer*)" ++ varName ++ ")->buffer"
 extractValue _ CFWorld          _       = "(Value *)NULL"
@@ -911,6 +932,7 @@ extractValue _ n _ = assert_total $ idris_crash ("INTERNAL ERROR: Unknown FFI ty
 packCFType : (cfType:CFType) -> (varName:String) -> String
 packCFType CFUnit          varName = "((Value *)NULL)"
 packCFType CFInt           varName = "idris2_mkInt64(" ++ varName ++ ")"
+packCFType CFInteger       varName = "(Value*)" ++ varName
 packCFType CFInt8          varName = "idris2_mkInt8(" ++ varName ++ ")"
 packCFType CFInt16         varName = "idris2_mkInt16(" ++ varName ++ ")"
 packCFType CFInt32         varName = "idris2_mkInt32(" ++ varName ++ ")"
@@ -925,6 +947,7 @@ packCFType CFChar          varName = "idris2_mkChar(" ++ varName ++ ")"
 packCFType CFPtr           varName = "idris2_makePointer(" ++ varName ++ ")"
 packCFType CFGCPtr         varName = "idris2_makePointer(" ++ varName ++ ")"
 packCFType CFBuffer        varName = "idris2_makeBuffer(" ++ varName ++ ")"
+packCFType CFForeignObj    varName = "idris2_makePointer(" ++ varName ++ ")"
 packCFType CFWorld         _       = "(Value *)NULL"
 packCFType (CFFun x y)     varName = "makeFunction(" ++ varName ++ ")"
 packCFType (CFIORes x)     varName = packCFType x varName
@@ -1055,8 +1078,18 @@ createCFunctions n (MkAForeign ccs fargs ret) = do
 
           decreaseIndentation
           emit EmptyFC "}"
-      _ => throw $ InternalError "[refc] FFI not found for \{cName n}"
-          -- not really total but this way this internal error does not contaminate everything else
+      _ => do
+          -- No RefC/C FFI found — generate a stub that crashes at runtime if called.
+          -- This allows compiling programs that import but don't call scheme-only FFI.
+          typeVarNameArgList <- createFFIArgList fargs
+          let fnDef = "Value *" ++ (cName n) ++ "(" ++ showSep ", " (replicate (length fargs) "Value *") ++ ");"
+          update FunctionDefinitions $ \otherDefs => (fnDef ++ "\n") :: otherDefs
+          emitFDef n typeVarNameArgList
+          emit EmptyFC "{"
+          increaseIndentation
+          emit EmptyFC $ "return idris2_crash((Value*)idris2_mkString(\"No RefC/C FFI for: " ++ cName n ++ "\"));"
+          decreaseIndentation
+          emit EmptyFC "}"
 
 createCFunctions n (MkAError exp) = throw $ InternalError "[refc] Error with expression: \{show exp}"
 -- not really total but this way this internal error does not contaminate everything else

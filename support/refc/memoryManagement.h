@@ -3,8 +3,25 @@
 #include "cBackend.h"
 
 Value *idris2_newValue(size_t size);
-Value *idris2_newReference(Value *source);
-void idris2_removeReference(Value *source);
+void idris2_pool_dealloc(Value *p);
+
+/* Slow paths — do actual refcount work on heap objects. */
+Value *idris2_newReference_slow(Value *source);
+void idris2_removeReference_slow(Value *elem);
+
+/* Fast-path micro-inline: just check null/unboxed (2-3 insns).
+ * The slow path is NOT inlined, avoiding code bloat. */
+static inline Value *idris2_newReference(Value *source) {
+  if (!source || idris2_vp_is_unboxed(source))
+    return source;
+  return idris2_newReference_slow(source);
+}
+
+static inline void idris2_removeReference(Value *elem) {
+  if (!elem || idris2_vp_is_unboxed(elem))
+    return;
+  idris2_removeReference_slow(elem);
+}
 
 #define IDRIS2_NEW_VALUE(t) ((t *)idris2_newValue(sizeof(t)))
 

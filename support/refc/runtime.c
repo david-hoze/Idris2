@@ -108,8 +108,10 @@ Value *idris2_trampoline(Value *it) {
       break;
 
     it = idris2_dispatch_closure(clos);
-    if (idris2_isUnique(clos))
-      free(clos);
+    if (clos->header.refCounter == IDRIS2_VP_REFCOUNTER_MAX)
+      ; /* immortal (static closure) — do not free or decrement */
+    else if (idris2_isUnique(clos))
+      idris2_pool_dealloc((Value *)clos);
     else
       --clos->header.refCounter;
   }
@@ -132,8 +134,10 @@ Value *idris2_tailcall_apply_closure(Value *_clos, Value *arg) {
   }
   newclos->args[clos->filled] = arg; // add argument to new arglist
 
-  if (idris2_isUnique(clos)) {
-    free(clos);
+  if (clos->header.refCounter == IDRIS2_VP_REFCOUNTER_MAX) {
+    /* immortal (static closure) — do not free or decrement */
+  } else if (idris2_isUnique(clos)) {
+    idris2_pool_dealloc((Value *)clos);
   } else {
     --clos->header.refCounter;
   }
@@ -153,7 +157,7 @@ void idris2_removeReuseConstructor(Value_Constructor *constr) {
                      (long long)constr->header.refCounter);
   constr->header.refCounter--;
   if (constr->header.refCounter == 0) {
-    free(constr);
+    idris2_pool_dealloc((Value *)constr);
   }
 }
 

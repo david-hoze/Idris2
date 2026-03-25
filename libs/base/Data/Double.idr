@@ -5,6 +5,7 @@ module Data.Double
 ||| its value, i.e. `1.0 + unitRoundoff == 1.0`.
 %foreign "scheme:blodwen-calcFlonumUnitRoundoff"
          "node:lambda:()=>Number.EPSILON / 2"
+         "C:refc_unitRoundoff"
 export
 unitRoundoff : Double
 
@@ -15,6 +16,7 @@ unitRoundoff : Double
 --          "scheme,racket:blodwen-flonumEpsilon"
 %foreign "scheme:blodwen-calcFlonumEpsilon"
          "node:lambda:()=>Number.EPSILON"
+         "C:refc_epsilon"
 export
 epsilon : Double
 
@@ -22,6 +24,7 @@ epsilon : Double
 ||| Not a number, e.g. `0.0 / 0.0`. Never equal to anything, including itself.
 %foreign "scheme:blodwen-flonumNaN"
          "node:lambda:()=>Number.NaN"
+         "C:refc_nan"
 export
 nan : Double
 
@@ -29,6 +32,7 @@ nan : Double
 ||| Positive Infinity. Can be negated to obtain Negative Infinity.
 %foreign "scheme:blodwen-flonumInf"
          "node:lambda:()=>Infinity"
+         "C:refc_inf"
 export
 inf : Double
 

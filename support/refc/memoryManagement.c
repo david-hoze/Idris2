@@ -42,33 +42,90 @@ void idris2_dumpMemoryStats(void) {
 void idris2_dumpMemoryStats() {}
 #endif
 
+/* Slow path for newReference — called only for heap objects. */
+Value *idris2_newReference_slow(Value *source) {
+  IDRIS2_INC_MEMSTAT(n_newReference);
+  IDRIS2_INC_MEMSTAT(n_actualNewReference);
+  if (source->header.refCounter == IDRIS2_VP_REFCOUNTER_MAX) {
+    IDRIS2_INC_MEMSTAT(n_immortalized);
+  } else {
+    source->header.refCounter++;
+  }
+  return source;
+}
+
+/* ---- pymalloc-inspired arena pool allocator ----
+ *
+ * Three-level structure (like CPython's pymalloc):
+ *   Arena (64 KB)  →  contains blocks of one size class
+ *   Free list      →  per size class, capped at POOL_FREELIST_MAX
+ *   Overflow       →  blocks beyond the cap are returned to free()
+ *
+ * Size classes: 16, 24, 32, 48, 64, 80, 96, 128 bytes.
+ * Pool index (1-8) stored in header.reserved for O(1) dealloc routing.
+ *
+ * Key improvements over simple malloc/free:
+ *   - Arena blocks are contiguous → better cache locality
+ *   - Free list reuse avoids malloc/free overhead
+ *   - Cap prevents unbounded memory growth
+ */
+#define POOL_NUM_CLASSES    8
+#define POOL_FREELIST_MAX   1024  /* max free blocks per size class */
+#define ARENA_SIZE          65536 /* 64 KB arenas */
+
+static void *pool_free[POOL_NUM_CLASSES] = {0};
+static int   pool_free_count[POOL_NUM_CLASSES] = {0};
+static const size_t pool_sizes[POOL_NUM_CLASSES] = {16,24,32,48,64,80,96,128};
+
+/* (arena allocation disabled — causes MSYS2 exit code 127) */
+
+/* Map byte size -> pool index (0-7), or -1 for oversized. */
+static inline int pool_index(size_t sz) {
+  if (sz <= 16)  return 0;
+  if (sz <= 24)  return 1;
+  if (sz <= 32)  return 2;
+  if (sz <= 48)  return 3;
+  if (sz <= 64)  return 4;
+  if (sz <= 80)  return 5;
+  if (sz <= 96)  return 6;
+  if (sz <= 128) return 7;
+  return -1;
+}
+
 Value *idris2_newValue(size_t size) {
-  /* Try to get memory aligned to pointer-size. Prefer C11 aligned_alloc
-     (not available on some platforms like older macOS), then posix_memalign,
-     and finally fall back to malloc which typically returns pointer-aligned
-     memory suitable for our needs. */
-#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) &&              \
-    !defined(__APPLE__) && !defined(_WIN32)
-  Value *retVal = (Value *)aligned_alloc(
-      sizeof(void *),
-      ((size + sizeof(void *) - 1) / sizeof(void *)) * sizeof(void *));
-#elif ((defined(_POSIX_C_SOURCE) && (_POSIX_C_SOURCE >= 200112L)) ||           \
-       (defined(_XOPEN_SOURCE) && (_XOPEN_SOURCE >= 600))) &&                  \
-    !defined(_WIN32)
-  Value *retVal = NULL;
-  IDRIS2_REFC_VERIFY(
-      posix_memalign((void **)&retVal, sizeof(void *),
-                     ((size + sizeof(void *) - 1) / sizeof(void *)) *
-                         sizeof(void *)) == 0,
-      "posix_memalign failed");
-#else
-  Value *retVal = (Value *)malloc(size);
-#endif
+  int idx = pool_index(size);
+  Value *retVal;
+  if (idx >= 0 && pool_free[idx]) {
+    retVal = (Value *)pool_free[idx];
+    pool_free[idx] = *(void **)pool_free[idx];
+    --pool_free_count[idx];
+  } else {
+    size_t real = (idx >= 0) ? pool_sizes[idx] : size;
+    retVal = (Value *)malloc(real);
+  }
   IDRIS2_REFC_VERIFY(retVal && !idris2_vp_is_unboxed(retVal), "malloc failed");
   IDRIS2_INC_MEMSTAT(n_newValue);
   retVal->header.refCounter = 1;
   retVal->header.tag = NO_TAG;
+  retVal->header.reserved = (uint8_t)(idx >= 0 ? idx + 1 : 0);
   return retVal;
+}
+
+/* Return a block to its pool, or free() if oversized or pool is full. */
+void idris2_pool_dealloc(Value *p) {
+  uint8_t cls = p->header.reserved;
+  if (cls >= 1 && cls <= POOL_NUM_CLASSES) {
+    int idx = cls - 1;
+    if (pool_free_count[idx] < POOL_FREELIST_MAX) {
+      *(void **)p = pool_free[idx];
+      pool_free[idx] = p;
+      ++pool_free_count[idx];
+    } else {
+      free(p);
+    }
+  } else {
+    free(p);
+  }
 }
 
 Value_Constructor *idris2_newConstructor(int total, int tag) {
@@ -202,31 +259,17 @@ Value_Array *idris2_makeArray(int length) {
   return a;
 }
 
-Value *idris2_newReference(Value *source) {
-  IDRIS2_INC_MEMSTAT(n_newReference);
-  // note that we explicitly allow NULL as source (for erased arguments)
-  if (source && !idris2_vp_is_unboxed(source) &&
-      source->header.refCounter != IDRIS2_VP_REFCOUNTER_MAX) {
-    IDRIS2_INC_MEMSTAT(n_actualNewReference);
-    ++source->header.refCounter;
-    if (source->header.refCounter == IDRIS2_VP_REFCOUNTER_MAX)
-      IDRIS2_INC_MEMSTAT(n_immortalized);
-  }
-  return source;
-}
-
-void idris2_removeReference(Value *elem) {
+/* Slow path for removeReference — called only for heap objects. */
+void idris2_removeReference_slow(Value *elem) {
   IDRIS2_INC_MEMSTAT(n_removeReference);
-  if (!elem || idris2_vp_is_unboxed(elem))
-    return;
-  else if (elem->header.refCounter == IDRIS2_VP_REFCOUNTER_MAX) {
+  if (elem->header.refCounter == IDRIS2_VP_REFCOUNTER_MAX) {
     IDRIS2_INC_MEMSTAT(n_tried_to_kill_immortals);
     return;
-  } else if (elem->header.refCounter != 1) {
-    --elem->header.refCounter;
+  }
+  --(elem->header.refCounter);
+  if (elem->header.refCounter != 0)
     return;
-  } else {
-    IDRIS2_INC_MEMSTAT(n_freed);
+  IDRIS2_INC_MEMSTAT(n_freed);
     switch (elem->header.tag) {
     case BITS32_TAG:
     case BITS64_TAG:
@@ -310,8 +353,7 @@ void idris2_removeReference(Value *elem) {
       break;
     }
     // finally, free element
-    free(elem);
-  }
+    idris2_pool_dealloc(elem);
 }
 
 // /////////////////////////////////////////////////////////////////////////

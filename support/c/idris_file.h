@@ -54,6 +54,8 @@ int idris2_filetimeModifiedTimeNsec(struct filetime *f);
 int idris2_filetimeStatusTimeSec(struct filetime *f);
 int idris2_filetimeStatusTimeNsec(struct filetime *f);
 
+int idris2_fileIsTTY(FILE *f);
+
 FILE *idris2_stdin();
 FILE *idris2_stdout();
 FILE *idris2_stderr();

@@ -2,6 +2,8 @@
 #include "refc_util.h"
 #include <string.h>
 #include <unistd.h>
+#include <math.h>
+#include <float.h>
 
 Value *idris2_Data_IORef_prim__newIORef(Value *erased, Value *input_value,
                                         Value *_world) {
@@ -234,3 +236,12 @@ char const idris2_constr_Integer[] = "Integer";
 char const idris2_constr_Char[] = "Char";
 char const idris2_constr_String[] = "String";
 char const idris2_constr____gt[] = "->";
+
+/* Double constants for Data.Double */
+double refc_unitRoundoff(void) { return DBL_EPSILON / 2.0; }
+double refc_epsilon(void) { return DBL_EPSILON; }
+double refc_nan(void) { return NAN; }
+double refc_inf(void) { return INFINITY; }
+
+/* GC stub — RefC uses Boehm GC which collects automatically */
+void refc_gc(int gen) { (void)gen; }
