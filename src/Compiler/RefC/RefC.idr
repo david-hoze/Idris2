@@ -577,6 +577,156 @@ mutual
         emit emptyFC "\{returnvar} = \{!(cStatementsFromANF body tailPosition)};"
         decreaseIndentation
 
+    -- | Process AConCase alternatives, assigning results to a shared return variable.
+    -- Extracted from cStatementsFromANF to allow iterative default-chain processing.
+    cConCaseAlts : {auto a : Ref ArgCounter Nat}
+                 -> {auto e : Ref EnvTracker Env}
+                 -> {auto oft : Ref OutfileText Output}
+                 -> {auto il : Ref IndentLevel Nat}
+                 -> {auto _ : Ref ConstDef (SortedMap Constant ConstDef)}
+                 -> String -> AVar -> List AConAlt -> TailPositionStatus
+                 -> Core ()
+    cConCaseAlts switchReturnVar sc alts tailPosition = do
+        let sc' = varName sc
+        env <- get EnvTracker
+        _ <- foldlC (\els, (MkAConAlt name coninfo tag args body) => do
+            let erased = coninfo == NIL || coninfo == NOTHING || coninfo == ZERO || coninfo == UNIT
+            if erased then emit emptyFC "\{els}if (NULL == \{sc'} /* \{show name} \{show coninfo} */) {"
+                else if coninfo == CONS || coninfo == JUST || coninfo == SUCC
+                then emit emptyFC "\{els}if (NULL != \{sc'} /* \{show name} \{show coninfo} */) {"
+                else if isEnum coninfo
+                then case tag of
+                    Just tag' => emit emptyFC "\{els}if (((uintptr_t)\{sc'} >> idris2_vp_int_shift) == \{show tag'} /* \{show name} */) {"
+                    Nothing   => emit emptyFC "\{els}if (0 /* \{show name} ENUM no tag */) {"
+                else do
+                    case tag of
+                        Nothing   => emit emptyFC "\{els}if (! strcmp(((Value_Constructor *)\{sc'})->name, idris2_constr_\{cName name})) {"
+                        Just tag' => emit emptyFC "\{els}if (((Value_Constructor *)\{sc'})->tag == \{show tag'} /* \{show name} */) {"
+
+            let conArgs = ALocal <$> args
+            let ownedWithArgs = SortedSet.union (fromList conArgs) $ if erased || isEnum coninfo then delete sc env.owned else env.owned
+            let (shouldDrop, actualOwned) = dropUnusedOwnedVars ownedWithArgs (freeVariables body)
+            let usedCons = usedConstructors body
+            let (dropReuseCons, actualReuseMap) = dropUnusedReuseCons env.reuseMap usedCons
+            increaseIndentation
+            _ <- foldlC (\k, arg => do
+                emit emptyFC "Value *var_\{show arg} = ((Value_Constructor*)\{sc'})->args[\{show k}];"
+                pure (S k) ) 0 args
+            let linearScrutinee : Bool = contains sc env.linearVars && not erased && not (isEnum coninfo)
+            let matchedArity = length args
+            let arityNames : List Name = Prelude.toList $ SortedSet.delete name $
+                  the (SortedSet Name) $ fromList $
+                  map fst $ filter (\p => snd p == matchedArity) (usedConstructorsWithArities body)
+            (shouldDrop, actualReuseMap) <-
+              the (Core (List String, SortedMap Name String)) $
+              if linearScrutinee then do
+                let namesToInsert = (if contains name usedCons then [name] else []) ++ arityNames
+                if not (null namesToInsert) && isJust (find (== sc') shouldDrop)
+                  then do
+                    let constr = "constructor_" ++ !(getNextCounter)
+                    emit emptyFC "Value_Constructor* \{constr} = (Value_Constructor*)\{sc'};"
+                    let reuseEntries = foldl (\m, n => insert n constr m) actualReuseMap namesToInsert
+                    pure (shouldDrop \\ (sc' :: (varName <$> conArgs)), reuseEntries)
+                  else do
+                    emit emptyFC "idris2_removeReuseConstructor((Value_Constructor*)\{sc'});"
+                    pure (filter (/= sc') shouldDrop, actualReuseMap)
+              else
+                addReuseConstructor env.reuseMap sc' name (varName <$> conArgs) usedCons shouldDrop actualReuseMap arityNames
+            removeVars shouldDrop
+            removeReuseConstructors dropReuseCons
+            put EnvTracker ({owned := actualOwned, reuseMap := actualReuseMap} env)
+            emit emptyFC "\{switchReturnVar} = \{!(cStatementsFromANF body tailPosition)};"
+            decreaseIndentation
+            pure "} else ") "" alts
+        pure ()
+
+    -- | Process AConstCase alternatives, assigning results to a shared return variable.
+    cConstCaseAlts : {auto a : Ref ArgCounter Nat}
+                   -> {auto e : Ref EnvTracker Env}
+                   -> {auto oft : Ref OutfileText Output}
+                   -> {auto il : Ref IndentLevel Nat}
+                   -> {auto _ : Ref ConstDef (SortedMap Constant ConstDef)}
+                   -> FC -> String -> AVar -> List AConstAlt -> TailPositionStatus
+                   -> Core ()
+    cConstCaseAlts fc switchReturnVar sc alts tailPosition = do
+        let sc' = varName sc
+        env <- get EnvTracker
+        case integer_switch alts of
+            True => do
+                tmpint <- getNewVarThatWillNotBeFreedAtEndOfBlock
+                emit emptyFC "int64_t \{tmpint} = idris2_extractInt(\{sc'});"
+                _ <- foldlC (\els, (MkAConstAlt c body) => do
+                    emit emptyFC "\{els}if (\{tmpint} == \{const2Integer c 0}) {"
+                    concaseBody env switchReturnVar "" [] body tailPosition
+                    pure "} else ") "" alts
+                pure ()
+            False => do
+                _ <- foldlC (\els, (MkAConstAlt c body) => do
+                    case c of
+                        Str x => emit emptyFC "\{els}if (! strcmp(\{cStringQuoted x}, ((Value_String *)\{sc'})->str)) {"
+                        Db  x => emit emptyFC "\{els}if (((Value_Double *)\{sc'})->d == \{show x}) {"
+                        x => throw $ InternalError "[refc] AConstCase : unsupported type. \{show fc} \{show x}"
+                    concaseBody env switchReturnVar "" [] body tailPosition
+                    pure "} else ") "" alts
+                pure ()
+
+    -- | Close accumulated else-block nesting from iterative default processing.
+    closeElseBlocks : {auto oft : Ref OutfileText Output}
+                    -> {auto il : Ref IndentLevel Nat}
+                    -> Nat -> Core ()
+    closeElseBlocks Z = pure ()
+    closeElseBlocks (S n) = do
+        decreaseIndentation
+        emit emptyFC "}"
+        closeElseBlocks n
+
+    -- | Process a chain of case-expression defaults iteratively.
+    -- When the default body of a case expression is itself a case,
+    -- process it inline rather than recursing through cStatementsFromANF.
+    -- This prevents stack overflow in the compiler for deeply nested if/else chains.
+    -- Returns the number of else-block levels that need closing.
+    cCaseDefaultChain : {auto a : Ref ArgCounter Nat}
+                      -> {auto e : Ref EnvTracker Env}
+                      -> {auto oft : Ref OutfileText Output}
+                      -> {auto il : Ref IndentLevel Nat}
+                      -> {auto _ : Ref ConstDef (SortedMap Constant ConstDef)}
+                      -> Env -> String -> Maybe ANF -> TailPositionStatus -> Nat
+                      -> Core Nat
+    cCaseDefaultChain _ _ Nothing _ depth = do
+        emit emptyFC "}"
+        pure depth
+    cCaseDefaultChain outerEnv switchReturnVar (Just defBody) tp depth =
+        case defBody of
+            AConCase fc sc alts mDef => do
+                emit emptyFC "} else {"
+                increaseIndentation
+                let (shouldDrop, actualOwned) = dropUnusedOwnedVars outerEnv.owned (freeVariables defBody)
+                let usedCons = usedConstructors defBody
+                let (dropReuseCons, actualReuseMap) = dropUnusedReuseCons outerEnv.reuseMap usedCons
+                put EnvTracker ({owned := actualOwned, reuseMap := actualReuseMap} outerEnv)
+                removeVars shouldDrop
+                removeReuseConstructors dropReuseCons
+                innerEnv <- get EnvTracker
+                cConCaseAlts switchReturnVar sc alts tp
+                cCaseDefaultChain innerEnv switchReturnVar mDef tp (S depth)
+            AConstCase fc sc alts def => do
+                emit emptyFC "} else {"
+                increaseIndentation
+                let (shouldDrop, actualOwned) = dropUnusedOwnedVars outerEnv.owned (freeVariables defBody)
+                let usedCons = usedConstructors defBody
+                let (dropReuseCons, actualReuseMap) = dropUnusedReuseCons outerEnv.reuseMap usedCons
+                put EnvTracker ({owned := actualOwned, reuseMap := actualReuseMap} outerEnv)
+                removeVars shouldDrop
+                removeReuseConstructors dropReuseCons
+                innerEnv <- get EnvTracker
+                cConstCaseAlts fc switchReturnVar sc alts tp
+                cCaseDefaultChain innerEnv switchReturnVar def tp (S depth)
+            _ => do
+                emit emptyFC "} else {"
+                concaseBody outerEnv switchReturnVar "" [] defBody tp
+                emit emptyFC "}"
+                pure depth
+
     cStatementsFromANF : {auto a : Ref ArgCounter Nat}
                       -> {auto oft : Ref OutfileText Output}
                       -> {auto il : Ref IndentLevel Nat}
@@ -695,105 +845,21 @@ mutual
         pure $ "idris2_\{cName p}("++ showSep ", " (map varName args) ++")"
 
     cStatementsFromANF (AConCase fc sc alts mDef) tailPosition = do
-        let sc' = varName sc
         switchReturnVar <- getNewVarThatWillNotBeFreedAtEndOfBlock
         emit fc "Value * \{switchReturnVar} = NULL;"
         env <- get EnvTracker
-        _ <- foldlC (\els, (MkAConAlt name coninfo tag args body) => do
-            let erased = coninfo == NIL || coninfo == NOTHING || coninfo == ZERO || coninfo == UNIT
-            if erased then emit emptyFC "\{els}if (NULL == \{sc'} /* \{show name} \{show coninfo} */) {"
-                else if coninfo == CONS || coninfo == JUST || coninfo == SUCC
-                then emit emptyFC "\{els}if (NULL != \{sc'} /* \{show name} \{show coninfo} */) {"
-                else if isEnum coninfo
-                then case tag of
-                    Just tag' => emit emptyFC "\{els}if (((uintptr_t)\{sc'} >> idris2_vp_int_shift) == \{show tag'} /* \{show name} */) {"
-                    Nothing   => emit emptyFC "\{els}if (0 /* \{show name} ENUM no tag */) {"
-                else do
-                    case tag of
-                        Nothing   => emit emptyFC "\{els}if (! strcmp(((Value_Constructor *)\{sc'})->name, idris2_constr_\{cName name})) {"
-                        Just tag' => emit emptyFC "\{els}if (((Value_Constructor *)\{sc'})->tag == \{show tag'} /* \{show name} */) {"
-
-            let conArgs = ALocal <$> args
-            let ownedWithArgs = SortedSet.union (fromList conArgs) $ if erased || isEnum coninfo then delete sc env.owned else env.owned
-            let (shouldDrop, actualOwned) = dropUnusedOwnedVars ownedWithArgs (freeVariables body)
-            let usedCons = usedConstructors body
-            let (dropReuseCons, actualReuseMap) = dropUnusedReuseCons env.reuseMap usedCons
-            increaseIndentation
-            _ <- foldlC (\k, arg => do
-                emit emptyFC "Value *var_\{show arg} = ((Value_Constructor*)\{sc'})->args[\{show k}];"
-                pure (S k) ) 0 args
-            -- QTT optimization: if the scrutinee is Rig1 (linear), its refcount is
-            -- guaranteed to be 1. We can unconditionally reuse the constructor memory
-            -- without a uniqueness check (no dup/free needed for fields either).
-            let linearScrutinee : Bool = contains sc env.linearVars && not erased && not (isEnum coninfo)
-            -- Compute arity-matched constructor names for cross-constructor reuse
-            let matchedArity = length args
-            let arityNames : List Name = Prelude.toList $ SortedSet.delete name $
-                  the (SortedSet Name) $ fromList $
-                  map fst $ filter (\p => snd p == matchedArity) (usedConstructorsWithArities body)
-            (shouldDrop, actualReuseMap) <-
-              the (Core (List String, SortedMap Name String)) $
-              if linearScrutinee then do
-                let namesToInsert = (if contains name usedCons then [name] else []) ++ arityNames
-                if not (null namesToInsert) && isJust (find (== sc') shouldDrop)
-                  then do
-                    -- Rig1 + reuse opportunity: unconditionally reuse (no isUnique check)
-                    let constr = "constructor_" ++ !(getNextCounter)
-                    emit emptyFC "Value_Constructor* \{constr} = (Value_Constructor*)\{sc'};"
-                    let reuseEntries = foldl (\m, n => insert n constr m) actualReuseMap namesToInsert
-                    pure (shouldDrop \\ (sc' :: (varName <$> conArgs)), reuseEntries)
-                  else do
-                    -- Rig1 but no reuse opportunity: free shell, fields exclusively owned
-                    emit emptyFC "idris2_removeReuseConstructor((Value_Constructor*)\{sc'});"
-                    pure (filter (/= sc') shouldDrop, actualReuseMap)
-              else
-                addReuseConstructor env.reuseMap sc' name (varName <$> conArgs) usedCons shouldDrop actualReuseMap arityNames
-            removeVars shouldDrop
-            removeReuseConstructors dropReuseCons
-            put EnvTracker ({owned := actualOwned, reuseMap := actualReuseMap} env)
-            emit emptyFC "\{switchReturnVar} = \{!(cStatementsFromANF body tailPosition)};"
-            decreaseIndentation
-            pure "} else ") "" alts
-
-        case mDef of
-            Nothing => pure ()
-            Just body => do
-                emit emptyFC "} else {"
-                concaseBody env switchReturnVar "" [] body tailPosition
-        emit emptyFC "}"
+        cConCaseAlts switchReturnVar sc alts tailPosition
+        depth <- cCaseDefaultChain env switchReturnVar mDef tailPosition 0
+        closeElseBlocks depth
         pure switchReturnVar
 
     cStatementsFromANF (AConstCase fc sc alts def) tailPosition = do
-        let sc' = varName sc
         switchReturnVar <- getNewVarThatWillNotBeFreedAtEndOfBlock
         emit fc "Value *\{switchReturnVar} = NULL;"
         env <- get EnvTracker
-        case integer_switch alts of
-            True => do
-                tmpint <- getNewVarThatWillNotBeFreedAtEndOfBlock
-                emit emptyFC "int64_t \{tmpint} = idris2_extractInt(\{sc'});"
-                _ <- foldlC (\els, (MkAConstAlt c body) => do
-                    emit emptyFC "\{els}if (\{tmpint} == \{const2Integer c 0}) {"
-                    concaseBody env switchReturnVar "" [] body tailPosition
-                    pure "} else ") "" alts
-                pure ()
-
-            False => do
-                _ <- foldlC (\els, (MkAConstAlt c body) => do
-                    case c of
-                        Str x => emit emptyFC "\{els}if (! strcmp(\{cStringQuoted x}, ((Value_String *)\{sc'})->str)) {"
-                        Db  x => emit emptyFC "\{els}if (((Value_Double *)\{sc'})->d == \{show x}) {"
-                        x => throw $ InternalError "[refc] AConstCase : unsupported type. \{show fc} \{show x}"
-                    concaseBody env switchReturnVar "" [] body tailPosition
-                    pure "} else ") "" alts
-                pure ()
-
-        case def of
-            Nothing => pure ()
-            Just body => do
-                emit emptyFC "} else {"
-                concaseBody env switchReturnVar "" [] body tailPosition
-        emit emptyFC "}"
+        cConstCaseAlts fc switchReturnVar sc alts tailPosition
+        depth <- cCaseDefaultChain env switchReturnVar def tailPosition 0
+        closeElseBlocks depth
         pure switchReturnVar
 
     cStatementsFromANF (APrimVal fc (I x)) tailPosition = cStatementsFromANF (APrimVal fc (I64 $ cast x)) tailPosition
