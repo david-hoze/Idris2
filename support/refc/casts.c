@@ -216,7 +216,10 @@ uint64_t mpz_get_lsb(mpz_t i, mp_bitcnt_t b) {
   mpz_t r;
   mpz_init(r);
   mpz_fdiv_r_2exp(r, i, b);
-  uint64_t retVal = mpz_get_ui(r);
+  /* mpz_get_ui returns unsigned long, which is 32-bit on Windows (LLP64).
+     Use mpz_export to correctly extract up to 64 bits on all platforms. */
+  uint64_t retVal = 0;
+  mpz_export(&retVal, NULL, -1, sizeof(uint64_t), 0, 0, r);
   mpz_clear(r);
   return retVal;
 }
