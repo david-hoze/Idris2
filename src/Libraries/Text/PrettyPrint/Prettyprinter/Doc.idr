@@ -446,7 +446,7 @@ prettyList1 : Pretty ann a => List1 a -> Doc ann
 prettyList1 = prettyList . forget
 
 export
-[prettyListMaybe] Pretty ann a => Pretty ann (List (Maybe a)) where
+[prettyListMaybe] Pretty ann a => Pretty ann (List (Maybe a)) where
   pretty = prettyList . catMaybes
 
 export

@@ -349,7 +349,7 @@ elabInterface {vars} ifc def_vis env nest constraints iname params dets mcon bod
 
     elabMethods : (conName : Name) -> List Name -> List Signature -> Core ()
     elabMethods conName methNames methSigs
-        = do bindNames <- for methNames $ genVarName . nameRoot
+        = do bindNames <- cfor methNames $ genVarName . nameRoot
              -- Methods have same visibility as data declaration
              fnsm <- traverse (getMethToplevel env (collapseDefault def_vis)
                                                iname conName

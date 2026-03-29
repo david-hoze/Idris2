@@ -842,7 +842,7 @@ exprSearchOpts opts fc n_in hints
                      then do d <- getLHSData defs lhs
                              pure ({ recData := d } opts)
                      else pure opts
-         validHints <- concat <$> for hints (\hint => do
+         validHints <- concat <$> cfor hints (\hint => do
            defs <- get Ctxt
            entries <- lookupCtxtName hint (gamma defs)
            pure $ map (Resolved . fst . snd) entries)

@@ -194,7 +194,7 @@ findUniqueBindableNames fc arg env used t
        when (showShadowingWarning !getSession) $
          do defs <- get Ctxt
             let ctxt = gamma defs
-            ns <- map catMaybes $ for assoc $ \ (n, _) => do
+            ns <- map catMaybes $ cfor assoc $ \ (n, _) => do
                     ns <- lookupCtxtName n ctxt
                     let ns = flip List.mapMaybe ns $ \(n, _, d) =>
                                case definition d of
@@ -651,7 +651,7 @@ etaExpandImplicits : {auto c : Ref Ctxt Defs} ->
                      Core (RawImp, RawImp)
 etaExpandImplicits fc ty lhs rhs
     = do let imps = collectImplicits ty
-         namedImps <- for imps $ \nm => (nm,) <$> genVarName "arg"
+         namedImps <- cfor imps $ \nm => (nm,) <$> genVarName "arg"
          let lhsArgs = namedImps <&> makeArg True
          let rhsArgs = namedImps <&> makeArg False
          pure (apply lhs lhsArgs, apply rhs rhsArgs)

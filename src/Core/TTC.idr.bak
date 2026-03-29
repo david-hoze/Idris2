@@ -1203,22 +1203,6 @@ TTC Transform where
            lhs <- fromBuf
            rhs <- fromBuf
            pure (MkTransform {vars} n env lhs rhs)
--- Trim a GlobalDef for caching: strip heavy fields from imported defs.
--- Keeps PMDef structure (treeCT needed for interface resolution + evaluation).
--- Strips: pats, treeRT, compexpr, namedcompexpr, sizeChange, schemeExpr,
---         refersToRuntimeM.  treeRT + compexpr are only used by backends;
---         refersToRuntimeM is only used during codegen dependency traversal.
-trimForCache : GlobalDef -> GlobalDeftrimForCache def = case definition def of    PMDef pi args ct _ _ =>        { definition := PMDef pi args ct (Unmatched "trimmed") []        , sizeChange := []        , schemeExpr := Nothing        , refersToRuntimeM := Nothing        } def    _ => { sizeChange := []         , schemeExpr := Nothing         , refersToRuntimeM := Nothing         } def
--- decode : Context -> Int -> (update : Bool) -> ContextEntry -> Core GlobalDef
-Core.Context.decode gam idx update (Coded ns bin)
-    = do b <- newRef Bin bin
-         def <- fromBuf
-         let a = getContent gam
-         arr <- get Arr
-         def' <- resolved gam (restoreNS ns def)
-         when update $ coreLift_ $ writeArray arr idx (Decoded (trimForCache def'))
-         pure def'
-Core.Context.decode gam idx update (Decoded def) = pure def
 
 -- decode : Context -> Int -> (update : Bool) -> ContextEntry -> Core GlobalDef
 Core.Context.decode gam idx update (Coded ns bin)
@@ -1227,6 +1211,6 @@ Core.Context.decode gam idx update (Coded ns bin)
          let a = getContent gam
          arr <- get Arr
          def' <- resolved gam (restoreNS ns def)
-         when update $ coreLift_ $ writeArray arr idx (Decoded (trimForCache def'))
+         when update $ coreLift_ $ writeArray arr idx (Decoded def')
          pure def'
 Core.Context.decode gam idx update (Decoded def) = pure def

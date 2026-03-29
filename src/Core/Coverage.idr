@@ -341,10 +341,10 @@ getMissing fc n ty ctree
    = do defs <- get Ctxt
         let psIn = map (Ref fc Bound) vars
         pats <- buildArgs fc defs [] [] psIn ctree
-        pats <- for pats $ trimArgs defs [<] !(nf defs Env.empty ty)
+        pats <- cfor pats $ trimArgs defs [<] !(nf defs Env.empty ty)
         unless (null pats) $
           logC "coverage.missing" 20 $ map unlines $
-            for pats $ map show . traverse toFullNames
+            cfor pats $ map show . traverse toFullNames
         pure (map (apply fc (Ref fc Func n)) pats)
   where
     trimArgs : Defs ->

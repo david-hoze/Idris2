@@ -727,6 +727,33 @@ mutual
                 emit emptyFC "}"
                 pure depth
 
+    -- | Process a chain of ALet bindings iteratively.
+    -- Instead of recursing for each ALet (which overflows the stack on
+    -- deeply nested let-chains like those from large list literals),
+    -- we loop over consecutive ALet nodes and only recurse for non-ALet bodies.
+    cLetChain : {auto a : Ref ArgCounter Nat}
+              -> {auto oft : Ref OutfileText Output}
+              -> {auto il : Ref IndentLevel Nat}
+              -> {auto e : Ref EnvTracker Env}
+              -> {auto _ : Ref ConstDef (SortedMap Constant ConstDef)}
+              -> FC -> Int -> ANF -> ANF -> TailPositionStatus
+              -> Core String
+    cLetChain fc var value body tailPosition = do
+        env <- get EnvTracker
+        let usedVars = freeVariables body
+        let borrowVal = intersection env.owned (delete (ALocal var) usedVars)
+        let owned' = if contains (ALocal var) usedVars then insert (ALocal var) borrowVal else borrowVal
+        let usedCons = usedConstructors value
+        let valueEnv = { reuseMap $= (`intersectionMap` usedCons) } (moveFromOwnedToBorrowed env borrowVal)
+        put EnvTracker valueEnv
+        emit fc $ "Value * var_\{show var} = \{!(cStatementsFromANF value NotInTailPosition)};"
+        unless (contains (ALocal var) usedVars) $ emit fc $ "idris2_removeReference(var_\{show var});"
+        put EnvTracker ({ owned := owned', reuseMap $= (`differenceMap` usedCons) } env)
+        -- Iterate: if the body is another ALet, loop instead of recursing
+        case body of
+            ALet fc' var' value' body' => cLetChain fc' var' value' body' tailPosition
+            _ => cStatementsFromANF body tailPosition
+
     cStatementsFromANF : {auto a : Ref ArgCounter Nat}
                       -> {auto oft : Ref OutfileText Output}
                       -> {auto il : Ref IndentLevel Nat}
@@ -765,19 +792,11 @@ mutual
            NotInTailPosition => "idris2_apply_closure"
            _                 => "idris2_tailcall_apply_closure") ++ "(\{avarToC env closure}, \{avarToC env arg})"
 
-    cStatementsFromANF (ALet fc var value body) tailPosition = do
-        env <- get EnvTracker
-        let usedVars = freeVariables body
-        let borrowVal = intersection env.owned (delete (ALocal var) usedVars)
-        let owned' = if contains (ALocal var) usedVars then insert (ALocal var) borrowVal else borrowVal
-        let usedCons = usedConstructors value
-        -- When translating value into C, we borrow variables that will be used in body
-        let valueEnv = { reuseMap $= (`intersectionMap` usedCons) } (moveFromOwnedToBorrowed env borrowVal)
-        put EnvTracker valueEnv
-        emit fc $ "Value * var_\{show var} = \{!(cStatementsFromANF value NotInTailPosition)};"
-        unless (contains (ALocal var) usedVars) $ emit fc $ "idris2_removeReference(var_\{show var});"
-        put EnvTracker ({ owned := owned', reuseMap $= (`differenceMap` usedCons) } env)
-        cStatementsFromANF body tailPosition
+    -- Process ALet chains iteratively to prevent stack overflow
+    -- on deeply nested let-bindings (e.g. large list literals which
+    -- generate hundreds of consecutive ALet nodes in ANF).
+    cStatementsFromANF (ALet fc var value body) tailPosition =
+        cLetChain fc var value body tailPosition
 
     cStatementsFromANF (ACon fc n coninfo tag args) _ = do
         let nullCon = coninfo == NIL || coninfo == NOTHING || coninfo == ZERO || coninfo == UNIT
@@ -809,6 +828,13 @@ mutual
                         emit fc $ "Value_Constructor* " ++ constr ++ createNewConstructor
                         when (Nothing == tag) $ emit fc "\{constr}->name = idris2_constr_\{cName n};"
                         pure constr
+                -- Fix: free old field references before overwriting in reuse path
+                when isReuse $ do
+                    emit EmptyFC "for (int _fi = 0; _fi < (int)\{constr}->total; _fi++) {"
+                    increaseIndentation
+                    emit EmptyFC "idris2_removeReference(\{constr}->args[_fi]);"
+                    decreaseIndentation
+                    emit EmptyFC "}"
                 fillArgs env "\{constr}->args" args 0
                 if isReuse
                     then do

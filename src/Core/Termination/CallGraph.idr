@@ -288,11 +288,11 @@ mutual
              unwords ["Looking at the", show (length pdefs), "cases of", show  n]
            let pdefs' = map matchArgs pdefs
            logC "totality" 20 $ do
-              old <- for pdefs $ \ (_ ** (_, lhs, rhs)) => do
+              old <- cfor pdefs $ \ (_ ** (_, lhs, rhs)) => do
                        lhs <- toFullNames lhs
                        rhs <- toFullNames rhs
                        pure $ "    " ++ show lhs ++ " => " ++ show rhs
-              new <- for pdefs' $ \ (_ ** (_, lhs, rhs)) => do
+              new <- cfor pdefs' $ \ (_ ** (_, lhs, rhs)) => do
                        lhs <- traverse toFullNames lhs
                        rhs <- toFullNames rhs
                        pure $ "    " ++ show lhs ++ " => " ++ show rhs

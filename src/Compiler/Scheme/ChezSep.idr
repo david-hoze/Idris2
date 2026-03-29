@@ -168,7 +168,7 @@ compileToSS c chez appdir tm = do
   -- extraRuntime <- getExtraRuntime ds
 
   -- for each compilation unit, generate code
-  chezLibs <- for cui.compilationUnits $ \cu => do
+  chezLibs <- cfor cui.compilationUnits $ \cu => do
     let chezLib = chezLibraryName cu
 
     -- check if the hash has changed

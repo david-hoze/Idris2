@@ -796,8 +796,8 @@ mapMaybeM f = go [<] where
 
 %inline
 export
-for : List a -> (a -> Core b) -> Core (List b)
-for = flip traverse
+cfor : List a -> (a -> Core b) -> Core (List b)
+cfor = flip traverse
 
 export
 traverseList1 : (a -> Core b) -> List1 a -> Core (List1 b)

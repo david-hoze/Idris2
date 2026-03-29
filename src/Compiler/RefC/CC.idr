@@ -8,6 +8,7 @@ import System
 import Idris.Env
 
 import Data.String
+import System.Info
 
 %default total
 
@@ -105,8 +106,16 @@ compileCFile {asShared} objectFile outFile =
 
      let sharedFlag = if asShared then ["-shared"] else []
 
+     -- On Windows (MinGW/Cygwin), the default PE stack is 2 MB which
+     -- is too small for deeply recursive term processing (e.g. the
+     -- Idris2 compiler itself processing large list literals).
+     -- Reserve 8 MB to match typical Unix defaults.
+     let stackFlag = if elem os $ the (List String) ["windows", "mingw32", "cygwin32"]
+                        then ["-Wl,--stack,8388608"]
+                        else []
+
      let runcc = (escapeCmd $
-         [cc, "-Werror"] ++ sharedFlag ++ [objectFile,
+         [cc, "-Werror"] ++ sharedFlag ++ stackFlag ++ [objectFile,
               "-o", outFile,
               supportFile,
               "-lidris2_refc",

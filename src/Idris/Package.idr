@@ -407,7 +407,7 @@ addDeps pkg = do
         (done : StringMap (Maybe PkgVersion)) ->
         Core ResolutionRes
     getTransitiveDeps [] done = do
-      ms <- for (StringMap.toList done) $
+      ms <- cfor (StringMap.toList done) $
         \(pkg, mv) => findPkgDir pkg (exactBounds mv)
       pure . Resolved $ catMaybes ms
 
@@ -722,7 +722,7 @@ makeDoc pkg opts =
        u <- newRef UST initUState
        setPPrint docsPPrint
 
-       [] <- concat <$> for (modules pkg) (\(mod, filename) => do
+       [] <- concat <$> cfor (modules pkg) (\(mod, filename) => do
            -- load dependencies
            let ns = miAsNamespace mod
            addImport (MkImport emptyFC False mod ns)
@@ -730,7 +730,7 @@ makeDoc pkg opts =
            -- generate docs for all visible names
            defs <- get Ctxt
            let ctxt = gamma defs
-           visibleDefs <- map catMaybes $ for [1..nextEntry ctxt - 1] $ \ i =>
+           visibleDefs <- map catMaybes $ cfor [1..nextEntry ctxt - 1] $ \ i =>
              do -- Select the entries that are from `mod` and visible
                 Just gdef <- lookupCtxtExact (Resolved i) ctxt
                   | _ => pure Nothing
@@ -756,7 +756,7 @@ makeDoc pkg opts =
                 pure (Just gdef)
 
            let outputFilePath = docDir </> (show mod ++ ".html")
-           allDocs <- for (sortBy (compare `on` startPos . toNonEmptyFC . location) visibleDefs) $ \ def =>
+           allDocs <- cfor (sortBy (compare `on` startPos . toNonEmptyFC . location) visibleDefs) $ \ def =>
                         getDocsForName emptyFC (fullname def) shortNamesConfig
            let allDecls = annotate Declarations $ vcat allDocs
 
@@ -794,7 +794,7 @@ makeDoc pkg opts =
                       coreLift $ writeFile (docBase </> "index.html") $ renderDocIndex pkg (modDocstrings syn)
          | Left err => fileError (docBase </> "index.html") err
 
-       errs <- for cssFiles $ \ cssFile => do
+       errs <- cfor cssFiles $ \ cssFile => do
           let fn = cssFile.filename ++ ".css"
           css <- readDataFile ("docs/" ++ fn)
           Right () <- coreLift $ writeFile (docBase </> fn) css

@@ -139,7 +139,7 @@ getConsGDef :
 getConsGDef fc cons = do
     defs <- get Ctxt
     let c = defs.gamma
-    for cons $ \n => do
+    cfor cons $ \n => do
         [(n', _, gdef)] <- lookupCtxtName n c
             | ns => ambiguousName fc n $ (\(n, _, _) => n) <$> ns
         pure (n', gdef)

@@ -1128,7 +1128,7 @@ mutual
            -- Look for implicitly bindable names in the parameters
            pnames <- ifThenElse (not !isUnboundImplicits) (pure [])
              $ map concat
-             $ for (map (boundType . val) paramList)
+             $ cfor (map (boundType . val) paramList)
              $ findUniqueBindableNames pp.fc True (ps ++ paramNames) []
 
            let paramsb = map {f = List1} (map {f = WithData _} (mapType (doBind pnames))) params'
@@ -1167,14 +1167,14 @@ mutual
                                                          (snd ntm)
                                           pure (fst ntm, tm')) cons
            params' : List (WithFC Name, RigCount, RawImp) <-
-                        map concat $ for params $ \ (MkBasicMultiBinder rig nm tm) =>
+                        map concat $ cfor params $ \ (MkBasicMultiBinder rig nm tm) =>
                            do tm' <- desugar AnyExpr ps tm
                               pure $ map (, rig, tm') (forget nm)
            -- Look for bindable names in all the constraints and parameters
            let mnames = map dropNS (definedIn (map val body))
            bnames <- ifThenElse (not !isUnboundImplicits) (pure [])
              $ map concat
-             $ for (map Builtin.snd cons' ++ map (snd . snd) params')
+             $ cfor (map Builtin.snd cons' ++ map (snd . snd) params')
              $ findUniqueBindableNames int.fc True (ps ++ mnames ++ paramNames) []
 
            let paramsb = map (\ (nm, (rig, tm)) =>
@@ -1206,18 +1206,18 @@ mutual
       = do opts <- traverse (desugarFnOpt ps) fnopts
            verifyTotalityModifiers impl.fc opts
 
-           is' <- for is $ traverse (\ bind =>
+           is' <- cfor is $ traverse (\ bind =>
                      do tm' <- desugar AnyExpr ps bind.boundType
                         pi' <- mapDesugarPiInfo ps bind.info
                         pure (MkPiBindData pi' tm'))
-           cons' <- for cons $ \ (n, tm) =>
+           cons' <- cfor cons $ \ (n, tm) =>
                      do tm' <- desugar AnyExpr ps tm
                         pure (n, tm')
            params' : List RawImp <- traverse (desugar AnyExpr ps) params
            -- Look for bindable names in all the constraints and parameters
            bnames <- ifThenElse (not !isUnboundImplicits) (pure [])
              $ map concat
-             $ for (map snd cons' ++ params')
+             $ cfor (map snd cons' ++ params')
              $ findUniqueBindableNames impl.fc True ps []
 
            let paramsb = map (doBind bnames) params'
@@ -1254,7 +1254,7 @@ mutual
   desugarDecl ps rec@(MkWithData _ $ PRecord doc vis mbtot (MkPRecord tn params opts conname_in fields))
       = do addDocString tn doc
            params' : List ImpParameter <-
-              map concat $ for params $ \ (MkPBinder info (MkBasicMultiBinder rig names tm)) =>
+              map concat $ cfor params $ \ (MkPBinder info (MkBasicMultiBinder rig names tm)) =>
                  do tm' <- desugar AnyExpr ps tm
                     p'  <- mapDesugarPiInfo ps info
                     let allBinders = map (\nm => Mk [rig, nm] (MkPiBindData p' tm')) (forget names)
@@ -1271,7 +1271,7 @@ mutual
 
            let paramsb : List ImpParameter = map (map $ mapType $ doBind bnames) params'
            let recName = nameRoot tn
-           fields' : List (List IField) <- for fields (desugarField (ps ++ fnames ++ paramNames)
+           fields' : List (List IField) <- cfor fields (desugarField (ps ++ fnames ++ paramNames)
                                                                     (mkNamespace recName))
            let conname : Name = maybe (mkConName tn) val conname_in
            whenJust (get "doc" <$> conname_in) (addDocString conname)

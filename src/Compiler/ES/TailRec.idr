@@ -338,10 +338,11 @@ functions :  (tcLoopName : Name)
           -> List (Name,FC,NamedDef)
           -> List Function
 functions loop dfs =
-  let ts     = mapMaybe def dfs
+  let getDef : (Name,FC,NamedDef) -> Maybe (Name,List Name,NamedCExp)
+      getDef nfd = case snd (snd nfd) of
+                     MkNmFun args x => Just (fst nfd, args, x)
+                     other          => Nothing
+      ts     = mapMaybe getDef dfs
       groups = tailCallGroups ts
       names  = SortedSet.fromList $ concatMap (keys . functions) groups
    in tailRecOptim groups names loop ts
-   where def : (Name,FC,NamedDef) -> Maybe (Name,List Name,NamedCExp)
-         def (n,_,MkNmFun args x) = Just (n,args,x)
-         def _                    = Nothing

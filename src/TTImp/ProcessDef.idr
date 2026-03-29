@@ -1259,7 +1259,7 @@ lookupOrAddAlias eopts nest env fc n [cl@(PatClause _ lhs rhs)]
                 Just (str, kept) <- getSimilarNames n
                    | Nothing => pure []
                 -- only keep the ones that haven't been defined yet
-                decls <- for kept $ \ (cand, vis, weight) => do
+                decls <- cfor kept $ \ (cand, vis, weight) => do
                     Just gdef <- lookupCtxtExact cand (gamma defs)
                       | Nothing => pure Nothing -- should be impossible
                     let None = definition gdef

@@ -764,7 +764,7 @@ HasNames Error where
     = AmbiguousSearch fc <$> full gam rho <*> full gam s <*> traverse (full gam) xs
   full gam (AmbiguityTooDeep fc n xs) = AmbiguityTooDeep fc <$> full gam n <*> traverse (full gam) xs
   full gam (AllFailed xs)
-     = map AllFailed $ for xs $ \ (mn, err) =>
+     = map AllFailed $ cfor xs $ \ (mn, err) =>
          (,) <$> traverseOpt (full gam) mn <*> full gam err
   full gam (RecordTypeNeeded fc rho) = RecordTypeNeeded fc <$> full gam rho
   full gam (DuplicatedRecordUpdatePath fc xs) = pure (DuplicatedRecordUpdatePath fc xs)
@@ -774,7 +774,7 @@ HasNames Error where
   full gam (InvalidArgs fc rho xs s) = InvalidArgs fc <$> full gam rho <*> traverse (full gam) xs <*> full gam s
   full gam (TryWithImplicits fc rho xs)
     = TryWithImplicits fc <$> full gam rho
-       <*> for xs (\ (n, t) => (,) <$> full gam n <*> full gam t)
+       <*> cfor xs (\ (n, t) => (,) <$> full gam n <*> full gam t)
   full gam (BadUnboundImplicit fc rho n s) = BadUnboundImplicit fc <$> full gam rho <*> full gam n <*> full gam s
   full _ (CantSolveGoal fc gam rho s merr)
     = CantSolveGoal fc gam <$> full gam rho <*> full gam s <*> traverseOpt (full gam) merr
@@ -863,7 +863,7 @@ HasNames Error where
     = AmbiguousSearch fc <$> resolved gam rho <*> resolved gam s <*> traverse (resolved gam) xs
   resolved gam (AmbiguityTooDeep fc n xs) = AmbiguityTooDeep fc <$> resolved gam n <*> traverse (resolved gam) xs
   resolved gam (AllFailed xs)
-     = map AllFailed $ for xs $ \ (mn, err) =>
+     = map AllFailed $ cfor xs $ \ (mn, err) =>
          (,) <$> traverseOpt (resolved gam) mn <*> resolved gam err
   resolved gam (RecordTypeNeeded fc rho) = RecordTypeNeeded fc <$> resolved gam rho
   resolved gam (DuplicatedRecordUpdatePath fc xs) = pure (DuplicatedRecordUpdatePath fc xs)
@@ -873,7 +873,7 @@ HasNames Error where
   resolved gam (InvalidArgs fc rho xs s) = InvalidArgs fc <$> resolved gam rho <*> traverse (resolved gam) xs <*> resolved gam s
   resolved gam (TryWithImplicits fc rho xs)
     = TryWithImplicits fc <$> resolved gam rho
-       <*> for xs (\ (n, t) => (,) <$> resolved gam n <*> resolved gam t)
+       <*> cfor xs (\ (n, t) => (,) <$> resolved gam n <*> resolved gam t)
   resolved gam (BadUnboundImplicit fc rho n s) = BadUnboundImplicit fc <$> resolved gam rho <*> resolved gam n <*> resolved gam s
   resolved _ (CantSolveGoal fc gam rho s merr)
     = CantSolveGoal fc gam <$> resolved gam rho <*> resolved gam s <*> traverseOpt (resolved gam) merr

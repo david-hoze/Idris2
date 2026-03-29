@@ -91,7 +91,7 @@ getImplDocs : {auto c : Ref Ctxt Defs} ->
               Core (List (Doc IdrisDocAnn))
 getImplDocs keep
     = do defs <- get Ctxt
-         docss <- for (concat $ values $ typeHints defs) $ \ (impl, _) =>
+         docss <- cfor (concat $ values $ typeHints defs) $ \ (impl, _) =>
            do Just def <- lookupCtxtExact impl (gamma defs)
                 | _ => pure []
               -- Only keep things that look like implementations.
@@ -491,7 +491,7 @@ getDocsForImplementation t = do
   ((_, tophs) :: _) <- hintGroups <$> getSearchData fc False intf
     | _ => pure Nothing
   defs <- get Ctxt
-  impls <- map catMaybes $ for tophs $ \ hint => do
+  impls <- map catMaybes $ cfor tophs $ \ hint => do
     -- get the return type of all the candidate hints
     Just (ix, def) <- lookupCtxtExactI hint (gamma defs)
       | Nothing => pure Nothing
@@ -500,7 +500,7 @@ getDocsForImplementation t = do
     -- try to see whether it approximates what we are looking for
     -- we throw the head away because it'll be the interface name (I)
     let (_, cargs) = getFnArgs defaultKindedName retTy
-    bs <- for (zip args cargs) $ \ (arg, carg) => do
+    bs <- cfor (zip args cargs) $ \ (arg, carg) => do
       -- For now we only compare the heads of the arguments because we expect
       -- we are interested in implementations of the form
       -- Eq (List a), Functor (Vect n), etc.
