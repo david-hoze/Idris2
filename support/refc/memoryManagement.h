@@ -111,3 +111,4 @@ extern Value_String const idris2_predefined_nullstring;
 
 // You need uncomment a debugging code in memoryManagement.c to use this.
 void idris2_dumpMemoryStats(void);
+void idris2_log_rss(const char *label);

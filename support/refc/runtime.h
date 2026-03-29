@@ -4,7 +4,10 @@
 
 void idris2_missing_ffi();
 
-#define idris2_isUnique(x) ((x)->header.refCounter == 1)
+/* Disabled: unique reuse codegen has a double-free bug — the cleanup loop
+   frees old args THEN reassigns them, causing use-after-free when the same
+   values are reused in the new constructor (e.g. reverseOnto, mapAppend). */
+#define idris2_isUnique(x) (0)
 void idris2_removeReuseConstructor(Value_Constructor *constr);
 
 Value *idris2_apply_closure(Value *, Value *arg);

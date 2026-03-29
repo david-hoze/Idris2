@@ -1,53 +1,101 @@
 #include <stdbool.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "_datatypes.h"
 #include "refc_util.h"
 #include "runtime.h"
 
-#if 0
-struct {
-  unsigned int n_newValue;
-  unsigned int n_newReference;
-  unsigned int n_actualNewReference;
-  unsigned int n_immortalized;
-  unsigned int n_removeReference;
-  unsigned int n_tried_to_kill_immortals;
-  unsigned int n_freed;
-} idris2_memory_stat = {0, 0, 0, 0, 0, 00, 0};
-#define IDRIS2_INC_MEMSTAT(x)                                                  \
-  do {                                                                         \
-    ++(idris2_memory_stat.x);                                                  \
-  } while (0)
+
+/* ---- live-object diagnostics ----
+ * Tracks: allocations, frees, live count, high-water mark,
+ * and per-tag breakdown of currently live objects.
+ * Auto-reports every REPORT_INTERVAL allocations to stderr.
+ */
+#define IDRIS2_MEMSTAT_ENABLED 0
+#define REPORT_INTERVAL 500000000
+
+#if IDRIS2_MEMSTAT_ENABLED
+static struct {
+  uint64_t n_alloc;
+  uint64_t n_freed;
+  uint64_t n_live;
+  uint64_t n_live_peak;
+  uint64_t n_immortalized;
+  uint64_t bytes_alloc;
+  uint64_t bytes_freed;
+  /* per-tag live counts (tags 0-31) */
+  uint64_t tag_live[32];
+} idris2_ms = {0};
+
+#define IDRIS2_INC_MEMSTAT(x)
+
+static void idris2_memstat_alloc(size_t sz) {
+  idris2_ms.n_alloc++;
+  idris2_ms.n_live++;
+  idris2_ms.bytes_alloc += sz;
+  if (idris2_ms.n_live > idris2_ms.n_live_peak)
+    idris2_ms.n_live_peak = idris2_ms.n_live;
+  if (idris2_ms.n_alloc % REPORT_INTERVAL == 0) {
+    fprintf(stderr,
+      "[MEMSTAT] alloc=%llu freed=%llu live=%llu peak=%llu "
+      "bytes_net=%.1fMB immortal=%llu "
+      "| clos=%llu ctor=%llu str=%llu int=%llu ioref=%llu arr=%llu\n",
+      (unsigned long long)idris2_ms.n_alloc,
+      (unsigned long long)idris2_ms.n_freed,
+      (unsigned long long)idris2_ms.n_live,
+      (unsigned long long)idris2_ms.n_live_peak,
+      (double)(idris2_ms.bytes_alloc - idris2_ms.bytes_freed) / (1024.0*1024.0),
+      (unsigned long long)idris2_ms.n_immortalized,
+      (unsigned long long)idris2_ms.tag_live[CLOSURE_TAG],
+      (unsigned long long)idris2_ms.tag_live[CONSTRUCTOR_TAG],
+      (unsigned long long)idris2_ms.tag_live[STRING_TAG],
+      (unsigned long long)idris2_ms.tag_live[INTEGER_TAG],
+      (unsigned long long)idris2_ms.tag_live[IOREF_TAG],
+      (unsigned long long)idris2_ms.tag_live[ARRAY_TAG]);
+  }
+}
+
+static void idris2_memstat_tag_inc(uint8_t tag) {
+  if (tag < 32) idris2_ms.tag_live[tag]++;
+}
+
+static void idris2_memstat_free(Value *p, size_t sz) {
+  idris2_ms.n_freed++;
+  if (idris2_ms.n_live > 0) idris2_ms.n_live--;
+  idris2_ms.bytes_freed += sz;
+  uint8_t tag = p->header.tag;
+  if (tag < 32 && idris2_ms.tag_live[tag] > 0)
+    idris2_ms.tag_live[tag]--;
+}
 
 void idris2_dumpMemoryStats(void) {
-  fprintf(
-      stderr,
-      "n_newValue = %u\n"
-      "n_newReference = %u\n"
-      "n_actualNewReference = %u\n"
-      "n_immortalized = %u\n"
-      "n_removeReference = %u\n"
-      "n_tried_to_kill_immortals = %u\n"
-      "n_freed = %u\n",
-      idris2_memory_stat.n_newValue, idris2_memory_stat.n_newReference,
-      idris2_memory_stat.n_actualNewReference,
-      idris2_memory_stat.n_immortalized, idris2_memory_stat.n_removeReference,
-      idris2_memory_stat.n_tried_to_kill_immortals, idris2_memory_stat.n_freed);
+  fprintf(stderr,
+    "[MEMSTAT FINAL] alloc=%llu freed=%llu live=%llu peak=%llu "
+    "bytes_net=%.1fMB immortal=%llu\n",
+    (unsigned long long)idris2_ms.n_alloc,
+    (unsigned long long)idris2_ms.n_freed,
+    (unsigned long long)idris2_ms.n_live,
+    (unsigned long long)idris2_ms.n_live_peak,
+    (double)(idris2_ms.bytes_alloc - idris2_ms.bytes_freed) / (1024.0*1024.0),
+    (unsigned long long)idris2_ms.n_immortalized);
 }
 
 #else
 #define IDRIS2_INC_MEMSTAT(x)
-// don't inline this, Because IDRIS2_MEMSTAT works only at compiling support
-// libraries to suppressing overhead.
+static inline void idris2_memstat_alloc(size_t sz) { (void)sz; }
+static inline void idris2_memstat_tag_inc(uint8_t tag) { (void)tag; }
+static inline void idris2_memstat_free(Value *p, size_t sz) { (void)p; (void)sz; }
 void idris2_dumpMemoryStats() {}
 #endif
 
 /* Slow path for newReference — called only for heap objects. */
 Value *idris2_newReference_slow(Value *source) {
-  IDRIS2_INC_MEMSTAT(n_newReference);
-  IDRIS2_INC_MEMSTAT(n_actualNewReference);
   if (source->header.refCounter == IDRIS2_VP_REFCOUNTER_MAX) {
-    IDRIS2_INC_MEMSTAT(n_immortalized);
+#if IDRIS2_MEMSTAT_ENABLED
+    idris2_ms.n_immortalized++;
+#endif
   } else {
     source->header.refCounter++;
   }
@@ -92,20 +140,47 @@ static inline int pool_index(size_t sz) {
   return -1;
 }
 
+/* Flush all pool freelists back to the OS, freeing cached memory. */
+static void pool_flush_all(void) {
+  for (int i = 0; i < POOL_NUM_CLASSES; i++) {
+    void *p = pool_free[i];
+    while (p) {
+      void *next = *(void **)p;
+      free(p);
+      p = next;
+    }
+    pool_free[i] = NULL;
+    pool_free_count[i] = 0;
+  }
+#if defined(__GLIBC__)
+  malloc_trim(0);  /* return freed pages to OS */
+#elif defined(_WIN32)
+  HeapCompact(GetProcessHeap(), 0);
+#endif
+}
+
 Value *idris2_newValue(size_t size) {
   int idx = pool_index(size);
   Value *retVal;
-  if (idx >= 0 && pool_free[idx]) {
+  if (idx >= 0 && pool_free_count[idx] > 0) {
     retVal = (Value *)pool_free[idx];
     pool_free[idx] = *(void **)pool_free[idx];
     --pool_free_count[idx];
   } else {
     size_t real = (idx >= 0) ? pool_sizes[idx] : size;
     retVal = (Value *)malloc(real);
+    /* On malloc failure, flush all pool freelists and retry once. */
+    if (!retVal) {
+      pool_flush_all();
+      retVal = (Value *)malloc(real);
+    }
   }
   IDRIS2_REFC_VERIFY(retVal && !idris2_vp_is_unboxed(retVal), "malloc failed");
-  IDRIS2_INC_MEMSTAT(n_newValue);
+  idris2_memstat_alloc((idx >= 0) ? pool_sizes[idx] : size);
   retVal->header.refCounter = 1;
+  { static uint64_t _alloc_ctr = 0;
+    if (++_alloc_ctr % 50000000 == 0) idris2_log_rss("alloc");
+  }
   retVal->header.tag = NO_TAG;
   retVal->header.reserved = (uint8_t)(idx >= 0 ? idx + 1 : 0);
   return retVal;
@@ -114,6 +189,10 @@ Value *idris2_newValue(size_t size) {
 /* Return a block to its pool, or free() if oversized or pool is full. */
 void idris2_pool_dealloc(Value *p) {
   uint8_t cls = p->header.reserved;
+  size_t sz = (cls >= 1 && cls <= POOL_NUM_CLASSES)
+    ? pool_sizes[cls - 1]
+    : sizeof(Value);  /* approximate for oversized */
+  idris2_memstat_free(p, sz);
   if (cls >= 1 && cls <= POOL_NUM_CLASSES) {
     int idx = cls - 1;
     if (pool_free_count[idx] < POOL_FREELIST_MAX) {
@@ -132,9 +211,14 @@ Value_Constructor *idris2_newConstructor(int total, int tag) {
   Value_Constructor *retVal = (Value_Constructor *)idris2_newValue(
       sizeof(Value_Constructor) + sizeof(Value *) * total);
   retVal->header.tag = CONSTRUCTOR_TAG;
+  idris2_memstat_tag_inc(CONSTRUCTOR_TAG);
   retVal->total = total;
   retVal->tag = tag;
   retVal->name = NULL;
+  /* Zero-initialize args: codegen emits idris2_removeReference on all args
+     even for freshly allocated constructors (not just reused ones).
+     Without this, the cleanup loop dereferences garbage pointers. */
+  memset(retVal->args, 0, sizeof(Value *) * total);
   return retVal;
 }
 
@@ -142,6 +226,7 @@ Value_Closure *idris2_mkClosure(Value *(*f)(), uint8_t arity, uint8_t filled) {
   Value_Closure *retVal = (Value_Closure *)idris2_newValue(
       sizeof(Value_Closure) + sizeof(Value *) * filled);
   retVal->header.tag = CLOSURE_TAG;
+  idris2_memstat_tag_inc(CLOSURE_TAG);
   retVal->f = f;
   retVal->arity = arity;
   retVal->filled = filled;
@@ -209,6 +294,7 @@ Value_String *idris2_mkEmptyString(size_t l) {
 
   Value_String *retVal = IDRIS2_NEW_VALUE(Value_String);
   retVal->header.tag = STRING_TAG;
+  idris2_memstat_tag_inc(STRING_TAG);
   retVal->str = malloc(l);
   memset(retVal->str, 0, l);
   return retVal;
@@ -221,6 +307,7 @@ Value_String *idris2_mkString(char *s) {
   Value_String *retVal = IDRIS2_NEW_VALUE(Value_String);
   int l = strlen(s);
   retVal->header.tag = STRING_TAG;
+  idris2_memstat_tag_inc(STRING_TAG);
   retVal->str = malloc(l + 1);
   memset(retVal->str, 0, l + 1);
   memcpy(retVal->str, s, l);
@@ -416,4 +503,21 @@ Value *idris2_getPredefinedInteger(int n) {
     }
   }
   return (Value *)&idris2_predefined_Integer[n];
+}
+
+/* Quick RSS logger for leak hunting */
+
+/* Quick RSS logger for leak hunting - Windows/MinGW */
+#include <windows.h>
+#include <psapi.h>
+static int _rss_call_count = 0;
+void idris2_log_rss(const char *label) {
+  _rss_call_count++;
+  PROCESS_MEMORY_COUNTERS pmc;
+  if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+    fprintf(stderr, "[RSS] #%d %s: WorkingSet=%lluMB PeakWS=%lluMB\n",
+            _rss_call_count, label,
+            (unsigned long long)pmc.WorkingSetSize / (1024*1024),
+            (unsigned long long)pmc.PeakWorkingSetSize / (1024*1024));
+  }
 }

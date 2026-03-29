@@ -35,10 +35,16 @@ typedef struct {
   // Objects that reach the maximum reference count will be immortalized.
   // This 'immortalization' feature is also utilized to prevent statically
   // allocated objects from being destroyed.
-#define IDRIS2_VP_REFCOUNTER_MAX UINT16_MAX
-  uint16_t refCounter;
+  //
+  // WIDENED from uint16_t to uint32_t: the old 65535 ceiling caused
+  // premature immortalization during long compilations (296 modules),
+  // leaking all widely-shared closures and strings.  On 64-bit targets
+  // the struct stays 8 bytes thanks to existing alignment padding.
+#define IDRIS2_VP_REFCOUNTER_MAX UINT32_MAX
+  uint32_t refCounter;
   uint8_t tag;
   uint8_t reserved;
+  // 2 bytes padding on 64-bit (absorbed from old post-header padding)
 } Value_header;
 #define IDRIS2_STOCKVAL(t)                                                     \
   { IDRIS2_VP_REFCOUNTER_MAX, t, 0 }
